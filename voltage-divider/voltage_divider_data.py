@@ -370,7 +370,7 @@ def build_comparison_df(
     comparison_df["delta_V"] = comparison_df["measured_voltage_V"] - comparison_df[
         "simulated_voltage_V"
     ]
-    comparison_df["delta_percent"] = (
+    comparison_df["signed_relative_error_percent"] = (
         100 * comparison_df["delta_V"] / comparison_df["simulated_voltage_V"]
     )
     return comparison_df
