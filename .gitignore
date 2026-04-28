@@ -1,0 +1,19 @@
+
+# macOS stuff
+.DS_Store
+
+# python stuff
+__pycache__/
+*.py[cod]
+
+# Jupyter stuff
+.ipynb_checkpoints/
+
+# data files
+*.h5
+*.root
+*.npy
+*.npz
+
+# specific files 
+Test.ipynb
