@@ -22,6 +22,129 @@ def _hide_unused_axes(axes, used_count):
         ax.axis("off")
 
 
+def _pin_voltage_dataframe(data, source, plot_pin_order):
+    source = source.lower()
+
+    if source in {"measured", "measurement"}:
+        return (
+            data.measurement_df.rename(
+                columns={
+                    "computed_between": "pins",
+                    "cumulative_voltage_from_K_V": "pin_voltage_V",
+                }
+            )[["input_voltage_V", "pins", "pin_voltage_V"]]
+        )
+
+    if source in {"simulated", "simulation", "sim"}:
+        return (
+            data.sim_df.drop(columns="pins")
+            .reindex(plot_pin_order)
+            .rename_axis(index="pins", columns="input_voltage_V")
+            .stack()
+            .rename("pin_voltage_V")
+            .reset_index()
+        )
+
+    raise ValueError('source must be "measured" or "simulated"')
+
+
+def plot_pin_voltage_vs_input_voltage(
+    data,
+    source="measured",
+    plot_pin_order=None,
+    *,
+    figsize=(10, 6),
+    legend_ncol=3,
+    title=None,
+    ax=None,
+    show=True,
+):
+    """Plot pin voltage vs input voltage, one line per pin."""
+
+    if plot_pin_order is None:
+        plot_pin_order = CUMULATIVE_PIN_ORDER
+
+    voltage_df = _pin_voltage_dataframe(data, source, plot_pin_order)
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    for pin in plot_pin_order:
+        pin_df = voltage_df[voltage_df["pins"] == pin]
+        ax.plot(
+            pin_df["input_voltage_V"],
+            pin_df["pin_voltage_V"],
+            "o-",
+            label=pin,
+        )
+
+    source_label = "Measured" if source.lower() in {"measured", "measurement"} else "Simulated"
+    ax.set_xlabel("Input voltage [V]")
+    ax.set_ylabel("Voltage from K [V]")
+    ax.set_title(title or f"{source_label} pin voltage vs input voltage")
+    ax.legend(ncol=legend_ncol)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig, ax
+
+
+def plot_pin_voltage_vs_pin(
+    data,
+    source="measured",
+    plot_pin_order=None,
+    *,
+    figsize=(12, 6),
+    legend_ncol=3,
+    title=None,
+    ax=None,
+    show=True,
+):
+    """Plot pin voltage vs pin, one line per input voltage."""
+
+    if plot_pin_order is None:
+        plot_pin_order = CUMULATIVE_PIN_ORDER
+
+    voltage_df = _pin_voltage_dataframe(data, source, plot_pin_order)
+    input_voltages = sorted(voltage_df["input_voltage_V"].unique())
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    for input_voltage in input_voltages:
+        input_df = (
+            voltage_df[voltage_df["input_voltage_V"] == input_voltage]
+            .set_index("pins")
+            .reindex(plot_pin_order)
+            .reset_index()
+        )
+        ax.plot(
+            input_df["pins"],
+            input_df["pin_voltage_V"],
+            "o-",
+            label=f"{input_voltage:.0f} V",
+        )
+
+    source_label = "Measured" if source.lower() in {"measured", "measurement"} else "Simulated"
+    ax.set_xlabel("Pins")
+    ax.set_ylabel("Voltage from K [V]")
+    ax.set_title(title or f"{source_label} pin voltage vs pin")
+    ax.tick_params(axis="x", rotation=45)
+    ax.legend(title="Input voltage", ncol=legend_ncol)
+    ax.grid(alpha=0.3)
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+
+    return fig, ax
+
+
 def plot_by_pin(
     comparison_df,
     plot_pin_order=None,
