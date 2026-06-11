@@ -18,3 +18,8 @@ __pycache__/
 # specific files 
 Test.ipynb
 .setenv.sh
+debug.ipynb
+improve_codex.ipynb
+
+# folders
+data/
