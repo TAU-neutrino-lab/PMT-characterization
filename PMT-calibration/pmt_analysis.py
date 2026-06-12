@@ -32,6 +32,56 @@ def sorted_segment_keys(channel_group) -> list[str]:
     return sorted(keys, key=segment_number)
 
 
+def keysight_waveform_dataset(channel_group, channel: str = "Channel 1"):
+    """Return the single Keysight waveform dataset used by non-segment groups."""
+    data_name = f"{channel}Data"
+    if data_name in channel_group:
+        return channel_group[data_name]
+
+    dataset_keys = [
+        key
+        for key, value in channel_group.items()
+        if isinstance(value, h5py.Dataset) and key.endswith("Data") and segment_number(key) is None
+    ]
+    if len(dataset_keys) == 1:
+        return channel_group[dataset_keys[0]]
+
+    return None
+
+
+def keysight_waveform_count(channel_group, waveform_dataset=None) -> int:
+    attrs = channel_group.attrs
+    if "NumWaveforms" in attrs:
+        return int(attrs["NumWaveforms"])
+    if "NumSegments" in attrs and int(attrs["NumSegments"]) > 0:
+        return int(attrs["NumSegments"])
+    if waveform_dataset is not None:
+        n_samples = int(attrs["NumPoints"])
+        shape = waveform_dataset.shape
+        if len(shape) == 2:
+            return int(shape[0] if shape[1] == n_samples else shape[1])
+        if len(shape) == 1:
+            return int(shape[0] // n_samples)
+    return len(sorted_segment_keys(channel_group))
+
+
+def read_keysight_waveform_rows(waveform_dataset, start: int, stop: int, n_samples: int, dtype=np.float32):
+    """Read rows from a Keysight ``Channel NData`` dataset as ``(events, samples)``."""
+    shape = waveform_dataset.shape
+    if len(shape) == 2:
+        if shape[1] == n_samples:
+            return waveform_dataset[start:stop, :].astype(dtype, copy=False)
+        if shape[0] == n_samples:
+            return waveform_dataset[:, start:stop].T.astype(dtype, copy=False)
+        raise ValueError(f"Cannot infer waveform axis from dataset shape {shape} and NumPoints={n_samples}")
+
+    if len(shape) == 1:
+        raw = waveform_dataset[start * n_samples : stop * n_samples]
+        return raw.reshape(stop - start, n_samples).astype(dtype, copy=False)
+
+    raise ValueError(f"Unsupported Keysight waveform dataset shape {shape}")
+
+
 def keysight_channel_group(h5_file, channel: str = "Channel 1"):
     """Return the Keysight channel group for root-level or Waveforms layouts."""
     if channel in h5_file:
@@ -53,34 +103,77 @@ def read_keysight_h5_direct(
     segment_numbers=None,
     dtype=np.float32,
 ):
-    """Read a Keysight segmented HDF5 file into voltage in V.
+    """Read a Keysight HDF5 file into voltage in V.
 
     This replaces the lab-specific ``lab_tools.io.read_keysight_h5`` helper and
-    returns ``time_s, voltage_V, metadata``.
+    returns ``time_s, voltage_V, metadata``. It supports both layouts seen in
+    Keysight files:
+
+    - one dataset per segment, e.g. ``Seg1Data``;
+    - one waveform table, e.g. ``Channel 1Data``.
     """
     filename = Path(filename)
     with h5py.File(filename, "r") as h5_file:
         channel_group = keysight_channel_group(h5_file, channel=channel)
         attrs = channel_group.attrs
         keys = sorted_segment_keys(channel_group)
+        waveform_dataset = keysight_waveform_dataset(channel_group, channel=channel)
 
-        if segment_numbers is not None:
-            wanted = set(segment_numbers)
-            keys = [key for key in keys if segment_number(key) in wanted]
-
+        n_samples = int(attrs["NumPoints"])
         time_s = keysight_time_axis_ns(channel_group) * 1e-9
         yinc = float(attrs["YInc"])
         yorg = float(attrs["YOrg"])
 
-        voltage = np.empty((len(keys), len(time_s)), dtype=dtype)
-        for i, key in enumerate(keys):
-            voltage[i] = channel_group[key][()] * yinc + yorg
+        if keys:
+            if segment_numbers is not None:
+                wanted = set(segment_numbers)
+                keys = [key for key in keys if segment_number(key) in wanted]
+
+            voltage = np.empty((len(keys), len(time_s)), dtype=dtype)
+            for i, key in enumerate(keys):
+                voltage[i] = channel_group[key][()] * yinc + yorg
+            returned_segments = [segment_number(key) for key in keys]
+            layout = "segment_datasets"
+        elif waveform_dataset is not None:
+            n_waveforms = keysight_waveform_count(channel_group, waveform_dataset)
+            if segment_numbers is None:
+                row_indices = np.arange(n_waveforms, dtype=int)
+            else:
+                row_indices = np.array(list(segment_numbers), dtype=int)
+                row_indices = row_indices[(row_indices >= 0) & (row_indices < n_waveforms)]
+
+            if len(row_indices) == 0:
+                voltage = np.empty((0, len(time_s)), dtype=dtype)
+            elif np.array_equal(row_indices, np.arange(row_indices[0], row_indices[-1] + 1)):
+                voltage = read_keysight_waveform_rows(
+                    waveform_dataset,
+                    int(row_indices[0]),
+                    int(row_indices[-1]) + 1,
+                    n_samples,
+                    dtype=dtype,
+                )
+                voltage = voltage * yinc + yorg
+            else:
+                voltage = np.empty((len(row_indices), len(time_s)), dtype=dtype)
+                for i, row_index in enumerate(row_indices):
+                    voltage[i] = read_keysight_waveform_rows(
+                        waveform_dataset,
+                        int(row_index),
+                        int(row_index) + 1,
+                        n_samples,
+                        dtype=dtype,
+                    )[0] * yinc + yorg
+            returned_segments = row_indices.tolist()
+            layout = "waveform_dataset"
+        else:
+            raise KeyError(f"Could not find segment datasets or a waveform dataset in {h5_file.filename}")
 
         metadata = {
             "filename": str(filename),
             "channel": channel,
             "channel_attrs": dict(attrs.items()),
-            "segment_numbers": [segment_number(key) for key in keys],
+            "segment_numbers": returned_segments,
+            "layout": layout,
         }
 
     return time_s, voltage, metadata
@@ -105,22 +198,46 @@ def iter_keysight_chunks(files, channel: str = "Channel 1", chunk_size: int = 51
             yinc_mV = float(attrs["YInc"]) * 1e3
             yorg_mV = float(attrs["YOrg"]) * 1e3
             keys = sorted_segment_keys(channel_group)
+            waveform_dataset = keysight_waveform_dataset(channel_group, channel=channel)
 
-            for start in range(0, len(keys), chunk_size):
-                chunk_keys = keys[start : start + chunk_size]
-                raw = np.stack([channel_group[key][()] for key in chunk_keys]).astype(dtype, copy=False)
-                voltage_mV = raw * yinc_mV + yorg_mV
-                yield {
-                    "filename": str(filename),
-                    "time_ns": time_ns,
-                    "voltage_mV": voltage_mV,
-                    "segment_numbers": [segment_number(key) for key in chunk_keys],
-                    "metadata": {
+            if keys:
+                for start in range(0, len(keys), chunk_size):
+                    chunk_keys = keys[start : start + chunk_size]
+                    raw = np.stack([channel_group[key][()] for key in chunk_keys]).astype(dtype, copy=False)
+                    voltage_mV = raw * yinc_mV + yorg_mV
+                    yield {
                         "filename": str(filename),
-                        "channel": channel,
-                        "channel_attrs": dict(attrs.items()),
-                    },
-                }
+                        "time_ns": time_ns,
+                        "voltage_mV": voltage_mV,
+                        "segment_numbers": [segment_number(key) for key in chunk_keys],
+                        "metadata": {
+                            "filename": str(filename),
+                            "channel": channel,
+                            "channel_attrs": dict(attrs.items()),
+                            "layout": "segment_datasets",
+                        },
+                    }
+            elif waveform_dataset is not None:
+                n_samples = int(attrs["NumPoints"])
+                n_waveforms = keysight_waveform_count(channel_group, waveform_dataset)
+                for start in range(0, n_waveforms, chunk_size):
+                    stop = min(start + chunk_size, n_waveforms)
+                    raw = read_keysight_waveform_rows(waveform_dataset, start, stop, n_samples, dtype=dtype)
+                    voltage_mV = raw * yinc_mV + yorg_mV
+                    yield {
+                        "filename": str(filename),
+                        "time_ns": time_ns,
+                        "voltage_mV": voltage_mV,
+                        "segment_numbers": list(range(start, stop)),
+                        "metadata": {
+                            "filename": str(filename),
+                            "channel": channel,
+                            "channel_attrs": dict(attrs.items()),
+                            "layout": "waveform_dataset",
+                        },
+                    }
+            else:
+                raise KeyError(f"Could not find segment datasets or a waveform dataset in {h5_file.filename}")
 
 
 
@@ -149,6 +266,133 @@ def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_win
     baseline_mV = np.mean(voltage_mV[:, mask], axis=1)
     voltage_bs_mV = voltage_mV - baseline_mV[:, None]
     return voltage_bs_mV, baseline_mV
+
+
+def saturated_waveform_mask(
+    voltage_mV,
+    low_limit_mV=None,
+    high_limit_mV=None,
+    margin_mV: float = 0.0,
+    max_saturated_samples: int = 0,
+):
+    """Return a mask for raw waveforms that touch saturation limits.
+
+    Run this before baseline subtraction. Set one or both voltage limits. For
+    example, with ``low_limit_mV=-30`` and ``margin_mV=0.2``, samples at or
+    below ``-29.8 mV`` count as saturated.
+    """
+    if low_limit_mV is None and high_limit_mV is None:
+        raise ValueError("Provide at least one of low_limit_mV or high_limit_mV")
+
+    voltage_mV = np.asarray(voltage_mV)
+    saturated_samples = np.zeros(voltage_mV.shape, dtype=bool)
+
+    if low_limit_mV is not None:
+        saturated_samples |= voltage_mV <= (low_limit_mV + margin_mV)
+    if high_limit_mV is not None:
+        saturated_samples |= voltage_mV >= (high_limit_mV - margin_mV)
+
+    n_saturated_samples = np.sum(saturated_samples, axis=1)
+    saturated = n_saturated_samples > max_saturated_samples
+    return saturated, n_saturated_samples
+
+
+def remove_saturated_waveforms(
+    voltage_mV,
+    low_limit_mV=None,
+    high_limit_mV=None,
+    margin_mV: float = 0.0,
+    max_saturated_samples: int = 0,
+):
+    """Remove saturated raw waveforms and return ``selected, keep_mask, info``."""
+    saturated, n_saturated_samples = saturated_waveform_mask(
+        voltage_mV,
+        low_limit_mV=low_limit_mV,
+        high_limit_mV=high_limit_mV,
+        margin_mV=margin_mV,
+        max_saturated_samples=max_saturated_samples,
+    )
+    keep_mask = ~saturated
+    info = {
+        "saturated_mask": saturated,
+        "n_saturated_samples": n_saturated_samples,
+        "n_total": int(len(keep_mask)),
+        "n_kept": int(np.sum(keep_mask)),
+        "n_removed": int(np.sum(saturated)),
+        "efficiency": float(np.mean(keep_mask)) if len(keep_mask) else np.nan,
+    }
+    return voltage_mV[keep_mask], keep_mask, info
+
+
+def _metadata_voltage_limits_mV(metadata):
+    attrs = metadata.get("channel_attrs", metadata)
+    if "YDispOrigin" not in attrs or "YDispRange" not in attrs:
+        return None, None
+    center_mV = float(attrs["YDispOrigin"]) * 1e3
+    half_range_mV = float(attrs["YDispRange"]) * 1e3 / 2.0
+    return center_mV - half_range_mV, center_mV + half_range_mV
+
+
+def collect_saturation_selection(
+    files,
+    low_limit_mV=None,
+    high_limit_mV=None,
+    margin_mV: float = 0.0,
+    max_saturated_samples: int = 0,
+    infer_limits_from_metadata: bool = False,
+    channel: str = "Channel 1",
+    chunk_size: int = 512,
+):
+    """Build a whole-file keep mask that removes saturated raw waveforms.
+
+    The returned ``keep_mask`` can be passed as ``selection_mask`` to the later
+    baseline, timing, charge, or scan helpers.
+    """
+    keep_parts = []
+    saturated_parts = []
+    saturated_sample_parts = []
+    used_low_limit_mV = low_limit_mV
+    used_high_limit_mV = high_limit_mV
+
+    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
+        chunk_low_limit_mV = used_low_limit_mV
+        chunk_high_limit_mV = used_high_limit_mV
+        if infer_limits_from_metadata and (chunk_low_limit_mV is None or chunk_high_limit_mV is None):
+            inferred_low, inferred_high = _metadata_voltage_limits_mV(chunk["metadata"])
+            if chunk_low_limit_mV is None:
+                chunk_low_limit_mV = inferred_low
+                used_low_limit_mV = inferred_low
+            if chunk_high_limit_mV is None:
+                chunk_high_limit_mV = inferred_high
+                used_high_limit_mV = inferred_high
+
+        saturated, n_saturated_samples = saturated_waveform_mask(
+            chunk["voltage_mV"],
+            low_limit_mV=chunk_low_limit_mV,
+            high_limit_mV=chunk_high_limit_mV,
+            margin_mV=margin_mV,
+            max_saturated_samples=max_saturated_samples,
+        )
+        saturated_parts.append(saturated)
+        saturated_sample_parts.append(n_saturated_samples)
+        keep_parts.append(~saturated)
+
+    keep_mask = np.concatenate(keep_parts)
+    saturated_mask = np.concatenate(saturated_parts)
+    n_saturated_samples = np.concatenate(saturated_sample_parts)
+    return {
+        "keep_mask": keep_mask,
+        "saturated_mask": saturated_mask,
+        "n_saturated_samples": n_saturated_samples,
+        "n_total": int(len(keep_mask)),
+        "n_kept": int(np.sum(keep_mask)),
+        "n_removed": int(np.sum(saturated_mask)),
+        "efficiency": float(np.mean(keep_mask)) if len(keep_mask) else np.nan,
+        "low_limit_mV": used_low_limit_mV,
+        "high_limit_mV": used_high_limit_mV,
+        "margin_mV": margin_mV,
+        "max_saturated_samples": max_saturated_samples,
+    }
 
 
 
@@ -952,7 +1196,8 @@ def fit_spe_spectrum(
     bins: int = 250,
     max_pe: int = 8,
     min_spe_area_mV_ns: float = 1e-4,
-    p0=None
+    p0=None,
+    bounds=None
 ):
     """Fit the charge spectrum with a Poisson-weighted SPE model."""
     charge_mV_ns = np.asarray(charge_mV_ns, dtype=float)
@@ -965,10 +1210,11 @@ def fit_spe_spectrum(
 
     rough = score_charge_spectrum(charge_mV_ns)
     p0, rough_p0, provided_p0 = _initial_spe_parameters(charge_mV_ns, rough, min_spe_area_mV_ns, p0=p0)
-    bounds = (
-        [0.5 * len(charge_mV_ns), fit_range[0], 1e-4, min_spe_area_mV_ns, 1e-4, 0.001],
-        [2.0 * len(charge_mV_ns), fit_range[1], np.inf, np.inf, np.inf, 5.0],
-    )
+    if bounds is None:
+        bounds = (
+            [0.5 * len(charge_mV_ns), fit_range[0], 1e-4, min_spe_area_mV_ns, 1e-4, 0.001],
+            [2.0 * len(charge_mV_ns), fit_range[1], np.inf, np.inf, np.inf, 5.0],
+        )
     p0 = np.clip(np.asarray(p0, dtype=float), np.asarray(bounds[0], dtype=float), np.asarray(bounds[1], dtype=float))
 
     def model_for_fit(x, n_total, pedestal, sigma_ped, spe_area, sigma_spe, mu_led):
