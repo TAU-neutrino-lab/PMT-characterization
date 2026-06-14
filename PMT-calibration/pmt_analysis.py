@@ -14,7 +14,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 from scipy.optimize import curve_fit
-from scipy.special import gammaln
+from scipy.special import erfc, gammaln
 
 
 SEGMENT_RE = re.compile(r"Seg(\d+)Data$")
@@ -1114,6 +1114,469 @@ def spe_poisson_components(
     return components
 
 
+def gaussian_pdf(x, mean, sigma):
+    sigma = np.maximum(sigma, 1e-12)
+    return np.exp(-0.5 * ((x - mean) / sigma) ** 2) / (np.sqrt(2 * np.pi) * sigma)
+
+
+def exponential_gaussian_pdf(x, mean, sigma, alpha):
+    """PDF of Gaussian(mean, sigma) convolved with alpha*exp(-alpha*x), x>=0."""
+    sigma = np.maximum(sigma, 1e-12)
+    alpha = np.maximum(alpha, 1e-12)
+    z = (mean + alpha * sigma**2 - x) / (np.sqrt(2) * sigma)
+    return 0.5 * alpha * np.exp(alpha * (mean - x) + 0.5 * (alpha * sigma) ** 2) * erfc(z)
+
+
+def bellamy_spe_parameter_names() -> list[str]:
+    return [
+        "n_total",
+        "mu_pe",
+        "pedestal_mV_ns",
+        "sigma_pedestal_mV_ns",
+        "spe_area_mV_ns",
+        "sigma_spe_mV_ns",
+        "background_probability",
+        "background_slope_per_mV_ns",
+    ]
+
+
+def bellamy_spe_model(
+    x,
+    n_total,
+    mu_pe,
+    pedestal,
+    sigma_ped,
+    spe_area,
+    sigma_spe,
+    background_probability,
+    background_slope,
+    bin_width,
+    max_pe: int = 8,
+):
+    """Bellamy et al. PMT response model.
+
+    This is the Poisson-weighted PM response where each n-PE Gaussian response is
+    mixed with an exponential-background convolution. ``background_probability``
+    is the paper's w parameter and ``background_slope`` is the exponential
+    coefficient a.
+    """
+    y = np.zeros_like(x, dtype=float)
+    mu_pe = np.maximum(mu_pe, 1e-12)
+    w = np.clip(background_probability, 0.0, 1.0)
+
+    for n_pe in range(max_pe + 1):
+        log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
+        weight = np.exp(log_weight)
+        mean = pedestal + n_pe * spe_area
+        sigma = np.sqrt(sigma_ped**2 + n_pe * sigma_spe**2)
+        response = (1.0 - w) * gaussian_pdf(x, mean, sigma)
+        response += w * exponential_gaussian_pdf(x, mean, sigma, background_slope)
+        y += n_total * bin_width * weight * response
+
+    return y
+
+
+def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
+    """Return Bellamy model components grouped by n photoelectrons."""
+    components = {}
+    p = parameters
+    mu_pe = np.maximum(p["mu_pe"], 1e-12)
+    w = np.clip(p["background_probability"], 0.0, 1.0)
+
+    for n_pe in range(max_pe + 1):
+        log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
+        weight = np.exp(log_weight)
+        mean = p["pedestal_mV_ns"] + n_pe * p["spe_area_mV_ns"]
+        sigma = np.sqrt(p["sigma_pedestal_mV_ns"] ** 2 + n_pe * p["sigma_spe_mV_ns"] ** 2)
+        response = (1.0 - w) * gaussian_pdf(x, mean, sigma)
+        response += w * exponential_gaussian_pdf(x, mean, sigma, p["background_slope_per_mV_ns"])
+        components[n_pe] = p["n_total"] * bin_width * weight * response
+
+    return components
+
+
+def dynode_spe_parameter_names() -> list[str]:
+    return [
+        "n_total",
+        "mu_pe",
+        "pedestal_mV_ns",
+        "sigma_pedestal_mV_ns",
+        "g1_mV_ns",
+        "sigma_g1_mV_ns",
+        "g2_mV_ns",
+        "sigma_g2_mV_ns",
+        "alpha",
+    ]
+
+
+def dynode_spe_model(
+    x,
+    n_total,
+    mu_pe,
+    pedestal,
+    sigma_ped,
+    g1,
+    sigma_g1,
+    g2,
+    sigma_g2,
+    alpha,
+    bin_width,
+    max_pe: int = 8,
+):
+    """Poisson PE model with binomial first/second-dynode amplification paths.
+
+    For ``n`` photoelectrons, ``k`` are assigned to the second-dynode path with
+    binomial probability ``Binomial(k | n, alpha)``. The remaining ``n-k`` use
+    the first-dynode path. Each branch contributes a Gaussian charge response.
+    """
+    y = np.zeros_like(x, dtype=float)
+    mu_pe = np.maximum(mu_pe, 1e-12)
+    alpha = np.clip(alpha, 0.0, 1.0)
+
+    for n_pe in range(max_pe + 1):
+        log_poisson = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
+        poisson_weight = np.exp(log_poisson)
+
+        for n_second in range(n_pe + 1):
+            n_first = n_pe - n_second
+            if alpha == 0.0 and n_second > 0:
+                continue
+            if alpha == 1.0 and n_first > 0:
+                continue
+
+            log_binomial = (
+                gammaln(n_pe + 1)
+                - gammaln(n_second + 1)
+                - gammaln(n_first + 1)
+            )
+            if n_second:
+                log_binomial += n_second * np.log(np.maximum(alpha, 1e-300))
+            if n_first:
+                log_binomial += n_first * np.log(np.maximum(1.0 - alpha, 1e-300))
+
+            weight = poisson_weight * np.exp(log_binomial)
+            mean = pedestal + n_first * g1 + n_second * g2
+            sigma = np.sqrt(sigma_ped**2 + n_first * sigma_g1**2 + n_second * sigma_g2**2)
+            sigma = np.maximum(sigma, 1e-9)
+            y += n_total * bin_width * weight / (np.sqrt(2 * np.pi) * sigma) * np.exp(
+                -0.5 * ((x - mean) / sigma) ** 2
+            )
+
+    return y
+
+
+def dynode_spe_components(x, parameters, bin_width, max_pe: int = 8):
+    """Return dynode-path model components grouped by ``n`` photoelectrons."""
+    components = {}
+    for n_pe in range(max_pe + 1):
+        component = np.zeros_like(x, dtype=float)
+        for n_second in range(n_pe + 1):
+            p = dict(parameters)
+            # One state at a time: total normalization times the exact state
+            # probability. Reuse the same Gaussian expression as the model.
+            n_first = n_pe - n_second
+            alpha = np.clip(p["alpha"], 0.0, 1.0)
+            log_poisson = -p["mu_pe"] + n_pe * np.log(np.maximum(p["mu_pe"], 1e-12)) - gammaln(n_pe + 1)
+            log_binomial = (
+                gammaln(n_pe + 1)
+                - gammaln(n_second + 1)
+                - gammaln(n_first + 1)
+            )
+            if n_second:
+                log_binomial += n_second * np.log(np.maximum(alpha, 1e-300))
+            if n_first:
+                log_binomial += n_first * np.log(np.maximum(1.0 - alpha, 1e-300))
+            weight = np.exp(log_poisson + log_binomial)
+            mean = p["pedestal_mV_ns"] + n_first * p["g1_mV_ns"] + n_second * p["g2_mV_ns"]
+            sigma = np.sqrt(
+                p["sigma_pedestal_mV_ns"] ** 2
+                + n_first * p["sigma_g1_mV_ns"] ** 2
+                + n_second * p["sigma_g2_mV_ns"] ** 2
+            )
+            sigma = np.maximum(sigma, 1e-9)
+            component += p["n_total"] * bin_width * weight / (np.sqrt(2 * np.pi) * sigma) * np.exp(
+                -0.5 * ((x - mean) / sigma) ** 2
+            )
+        components[n_pe] = component
+    return components
+
+
+def asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right):
+    """Normalized split-normal PDF with different left/right widths."""
+    sigma_left = np.maximum(sigma_left, 1e-9)
+    sigma_right = np.maximum(sigma_right, 1e-9)
+    norm = np.sqrt(2.0 / np.pi) / (sigma_left + sigma_right)
+    sigma = np.where(x < mean, sigma_left, sigma_right)
+    return norm * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+
+
+def free_spe_parameter_names(max_pe: int = 3) -> list[str]:
+    return [
+        "n_pedestal",
+        "pedestal_mV_ns",
+        "sigma_pedestal_mV_ns",
+        "spe_area_mV_ns",
+        "sigma_spe_left_mV_ns",
+        "sigma_spe_right_mV_ns",
+        *[f"n_{n_pe}pe" for n_pe in range(1, max_pe + 1)],
+        "constant_per_bin",
+    ]
+
+
+def free_spe_model(
+    x,
+    n_pedestal,
+    pedestal,
+    sigma_ped,
+    spe_area,
+    sigma_spe_left,
+    sigma_spe_right,
+    *peak_areas_and_constant,
+    bin_width,
+    max_pe: int = 3,
+):
+    """Pedestal plus free-area asymmetric PE peaks.
+
+    Unlike ``spe_poisson_model``, this does not constrain the PE peak areas to
+    follow a Poisson law. That is often a better diagnostic model for dark-count
+    or threshold-selected charge spectra.
+    """
+    if len(peak_areas_and_constant) != max_pe + 1:
+        raise ValueError(f"Expected {max_pe + 1} trailing parameters, got {len(peak_areas_and_constant)}")
+
+    peak_areas = peak_areas_and_constant[:max_pe]
+    constant_per_bin = peak_areas_and_constant[-1]
+
+    y = n_pedestal * bin_width * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped)
+
+    for n_pe, n_peak in enumerate(peak_areas, start=1):
+        mean = pedestal + n_pe * spe_area
+        sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_left**2)
+        sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_right**2)
+        y += n_peak * bin_width * asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right)
+
+    return y + constant_per_bin
+
+
+def free_spe_components(x, parameters, bin_width, max_pe: int = 3):
+    """Return the pedestal, PE, and constant components of ``free_spe_model``."""
+    pedestal = parameters["pedestal_mV_ns"]
+    sigma_ped = parameters["sigma_pedestal_mV_ns"]
+    spe_area = parameters["spe_area_mV_ns"]
+    sigma_left = parameters["sigma_spe_left_mV_ns"]
+    sigma_right = parameters["sigma_spe_right_mV_ns"]
+
+    components = {
+        "pedestal": parameters["n_pedestal"]
+        * bin_width
+        * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped),
+        "constant": np.full_like(x, parameters["constant_per_bin"], dtype=float),
+    }
+
+    for n_pe in range(1, max_pe + 1):
+        mean = pedestal + n_pe * spe_area
+        peak_sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_left**2)
+        peak_sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_right**2)
+        components[f"{n_pe} PE"] = (
+            parameters[f"n_{n_pe}pe"]
+            * bin_width
+            * asymmetric_gaussian_pdf(x, mean, peak_sigma_left, peak_sigma_right)
+        )
+
+    return components
+
+
+def parse_fit_parameter_specs(p0, parameter_names):
+    """Parse ``{name: [initial, lower, upper, is_fixed]}`` fit specs.
+
+    Fixed parameters are included in the model parameter dictionary but are not
+    varied by ``curve_fit``.
+    """
+    if p0 is None:
+        raise ValueError(
+            "p0 must be provided as {param_name: [initial, lower_bound, upper_bound, is_fixed]}"
+        )
+
+    missing = [name for name in parameter_names if name not in p0]
+    if missing:
+        raise KeyError(f"Missing p0 entries for: {', '.join(missing)}")
+
+    unknown = [name for name in p0 if name not in parameter_names]
+    if unknown:
+        raise KeyError(f"Unknown p0 entries for this model: {', '.join(unknown)}")
+
+    initial_parameters = {}
+    bounds_lower = {}
+    bounds_upper = {}
+    fixed_parameters = {}
+    fitted_parameter_names = []
+    fitted_initial = []
+    fitted_lower = []
+    fitted_upper = []
+
+    for name in parameter_names:
+        spec = p0[name]
+        if isinstance(spec, dict):
+            initial = spec["initial"]
+            lower = spec["lower"]
+            upper = spec["upper"]
+            is_fixed = spec.get("is_fixed", spec.get("fixed", False))
+        else:
+            values = list(spec)
+            if len(values) != 4:
+                raise ValueError(
+                    f"p0[{name!r}] must be [initial, lower_bound, upper_bound, is_fixed]"
+                )
+            initial, lower, upper, is_fixed = values
+
+        initial = float(initial)
+        lower = float(lower)
+        upper = float(upper)
+        is_fixed = bool(is_fixed)
+
+        if lower > upper:
+            raise ValueError(f"Lower bound is above upper bound for {name!r}")
+        if is_fixed:
+            lower = initial
+            upper = initial
+        elif not (lower <= initial <= upper):
+            raise ValueError(
+                f"Initial value for {name!r} is outside its bounds: {initial} not in [{lower}, {upper}]"
+            )
+
+        initial_parameters[name] = initial
+        bounds_lower[name] = lower
+        bounds_upper[name] = upper
+
+        if is_fixed:
+            fixed_parameters[name] = initial
+        else:
+            fitted_parameter_names.append(name)
+            fitted_initial.append(initial)
+            fitted_lower.append(lower)
+            fitted_upper.append(upper)
+
+    return {
+        "initial_parameters": initial_parameters,
+        "bounds": {
+            "lower": bounds_lower,
+            "upper": bounds_upper,
+        },
+        "fixed_parameters": fixed_parameters,
+        "fitted_parameter_names": fitted_parameter_names,
+        "fitted_initial": np.asarray(fitted_initial, dtype=float),
+        "fitted_bounds": (
+            np.asarray(fitted_lower, dtype=float),
+            np.asarray(fitted_upper, dtype=float),
+        ),
+    }
+
+
+def fit_histogram_model(
+    charge_mV_ns,
+    model_function,
+    parameter_names,
+    p0,
+    fit_range=None,
+    bins: int = 250,
+    model_name: str = "custom",
+    model_kwargs=None,
+    maxfev: int = 100000,
+):
+    """Fit a histogram with an arbitrary model and fixed/free parameters.
+
+    ``model_function`` must accept ``model_function(x, *params, **model_kwargs)``,
+    where ``params`` follow ``parameter_names`` order.
+    """
+    charge_mV_ns = np.asarray(charge_mV_ns, dtype=float)
+    charge_mV_ns = charge_mV_ns[np.isfinite(charge_mV_ns)]
+    if fit_range is None:
+        fit_range = default_fit_range(charge_mV_ns)
+    if model_kwargs is None:
+        model_kwargs = {}
+
+    counts, edges = np.histogram(charge_mV_ns, bins=bins, range=fit_range)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    bin_width = float(edges[1] - edges[0])
+
+    specs = parse_fit_parameter_specs(p0, parameter_names)
+    initial_parameters = specs["initial_parameters"]
+    fitted_parameter_names = specs["fitted_parameter_names"]
+
+    def full_parameters(fitted_values):
+        parameters = dict(initial_parameters)
+        parameters.update(zip(fitted_parameter_names, fitted_values))
+        return parameters
+
+    def model_from_dict(x, parameters):
+        ordered = [parameters[name] for name in parameter_names]
+        return model_function(x, *ordered, bin_width=bin_width, **model_kwargs)
+
+    sigma_counts = np.sqrt(np.maximum(counts, 1))
+
+    if fitted_parameter_names:
+        def model_for_fit(x, *fitted_values):
+            return model_from_dict(x, full_parameters(fitted_values))
+
+        popt_free, pcov_free = curve_fit(
+            model_for_fit,
+            centers,
+            counts,
+            p0=specs["fitted_initial"],
+            bounds=specs["fitted_bounds"],
+            sigma=sigma_counts,
+            absolute_sigma=True,
+            maxfev=maxfev,
+        )
+        parameters = full_parameters(popt_free)
+    else:
+        popt_free = np.array([], dtype=float)
+        pcov_free = np.empty((0, 0), dtype=float)
+        parameters = dict(initial_parameters)
+
+    model_counts = model_from_dict(centers, parameters)
+    chi2 = np.sum(((counts - model_counts) / sigma_counts) ** 2)
+    ndof = len(counts) - len(fitted_parameter_names)
+
+    errors = {name: 0.0 if name in specs["fixed_parameters"] else np.nan for name in parameter_names}
+    for i, name in enumerate(fitted_parameter_names):
+        errors[name] = float(np.sqrt(pcov_free[i, i])) if pcov_free.size else np.nan
+
+    diagnostics = []
+    lower = specs["bounds"]["lower"]
+    upper = specs["bounds"]["upper"]
+    for name in fitted_parameter_names:
+        value = parameters[name]
+        low = lower[name]
+        high = upper[name]
+        if np.isclose(value, low, rtol=0, atol=max(1e-6, 1e-3 * max(abs(low), 1.0))):
+            diagnostics.append(f"{name} is close to the lower fit bound")
+        if np.isfinite(high) and np.isclose(value, high, rtol=0, atol=max(1e-6, 1e-3 * max(abs(high), 1.0))):
+            diagnostics.append(f"{name} is close to the upper fit bound")
+
+    return {
+        "model": model_name,
+        "counts": counts,
+        "edges": edges,
+        "centers": centers,
+        "bin_width": bin_width,
+        "fit_range": fit_range,
+        "parameter_names": list(parameter_names),
+        "fitted_parameter_names": fitted_parameter_names,
+        "fixed_parameters": specs["fixed_parameters"],
+        "parameters": parameters,
+        "errors": errors,
+        "covariance": pcov_free,
+        "model_counts": model_counts,
+        "chi2": float(chi2),
+        "ndof": int(ndof),
+        "diagnostics": diagnostics,
+        "initial_parameters": initial_parameters,
+        "bounds": specs["bounds"],
+        "model_kwargs": dict(model_kwargs),
+    }
+
+
 def default_fit_range(charge_mV_ns, low_quantile=0.001, high_quantile=0.98, pad_fraction=0.05):
     low, high = np.quantile(charge_mV_ns, [low_quantile, high_quantile])
     pad = pad_fraction * (high - low)
@@ -1130,160 +1593,120 @@ SPE_FIT_PARAMETER_NAMES = [
 ]
 
 
-def _initial_spe_parameters(charge_mV_ns, rough, min_spe_area_mV_ns, p0=None):
-    pedestal0 = rough["rough_pedestal_mV_ns"] # location of 0-PE peak
-    sigma_ped0 = max(
-        rough["rough_pedestal_sigma_mV_ns"],
-        np.std(charge_mV_ns[charge_mV_ns < np.quantile(charge_mV_ns, 0.6)]) * 0.5,
-    )
-    spe_area0 = rough["rough_spe_area_mV_ns"] # mean charge of 1 PE
-    if not np.isfinite(spe_area0) or spe_area0 <= 0:
-        spe_area0 = max(np.quantile(charge_mV_ns, 0.95) - pedestal0, sigma_ped0 * 3)
-    sigma_spe0 = max(spe_area0 * 0.4, sigma_ped0)
-
-    rough_p0 = np.array(
-        [
-            len(charge_mV_ns), # total normalization
-            pedestal0,         # pedestal mean
-            sigma_ped0,        # pedestal width
-            max(spe_area0, min_spe_area_mV_ns * 1.5), # SPE gain
-            sigma_spe0,        # SPE width
-            0.03,              # mu (mean PE/event)
-        ],
-        dtype=float,
-    )
-
-    if p0 is None:
-        return rough_p0, rough_p0, set()
-
-    merged = rough_p0.copy()
-    provided = set()
-    aliases = {
-        "pedestal": "pedestal_mV_ns",
-        "sigma_ped": "sigma_pedestal_mV_ns",
-        "spe_area": "spe_area_mV_ns",
-        "sigma_spe": "sigma_spe_mV_ns",
-        "mu": "mu_led",
-    }
-
-    if isinstance(p0, dict):
-        name_to_index = {name: i for i, name in enumerate(SPE_FIT_PARAMETER_NAMES)}
-        for key, value in p0.items():
-            name = aliases.get(key, key)
-            if name not in name_to_index:
-                raise KeyError(f"Unknown SPE fit parameter {key!r}. Expected one of {SPE_FIT_PARAMETER_NAMES}")
-            if value is None or not np.isfinite(value):
-                continue
-            idx = name_to_index[name]
-            merged[idx] = float(value)
-            provided.add(name)
-    else:
-        values = list(p0)
-        if len(values) > len(SPE_FIT_PARAMETER_NAMES):
-            raise ValueError(f"p0 has {len(values)} entries, expected at most {len(SPE_FIT_PARAMETER_NAMES)}")
-        for idx, value in enumerate(values):
-            if value is None or not np.isfinite(value):
-                continue
-            merged[idx] = float(value)
-            provided.add(SPE_FIT_PARAMETER_NAMES[idx])
-
-    return merged, rough_p0, provided
-
-
 def fit_spe_spectrum(
     charge_mV_ns,
     fit_range=None,
     bins: int = 250,
     max_pe: int = 8,
-    min_spe_area_mV_ns: float = 1e-4,
     p0=None,
-    bounds=None
+    maxfev: int = 100000,
 ):
-    """Fit the charge spectrum with a Poisson-weighted SPE model."""
-    charge_mV_ns = np.asarray(charge_mV_ns, dtype=float)
-    if fit_range is None:
-        fit_range = default_fit_range(charge_mV_ns)
+    """Fit the charge spectrum with the Poisson-weighted SPE model.
 
-    counts, edges = np.histogram(charge_mV_ns, bins=bins, range=fit_range)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    bin_width = float(edges[1] - edges[0])
-
-    rough = score_charge_spectrum(charge_mV_ns)
-    p0, rough_p0, provided_p0 = _initial_spe_parameters(charge_mV_ns, rough, min_spe_area_mV_ns, p0=p0)
-    if bounds is None:
-        bounds = (
-            [0.5 * len(charge_mV_ns), fit_range[0], 1e-4, min_spe_area_mV_ns, 1e-4, 0.001],
-            [2.0 * len(charge_mV_ns), fit_range[1], np.inf, np.inf, np.inf, 5.0],
-        )
-    p0 = np.clip(np.asarray(p0, dtype=float), np.asarray(bounds[0], dtype=float), np.asarray(bounds[1], dtype=float))
-
-    def model_for_fit(x, n_total, pedestal, sigma_ped, spe_area, sigma_spe, mu_led):
-        return spe_poisson_model(
-            x,
-            n_total,
-            pedestal,
-            sigma_ped,
-            spe_area,
-            sigma_spe,
-            mu_led,
-            bin_width,     # fixed during fit
-            max_pe=max_pe, # fixed during fit
-        )
-
-    sigma_counts = np.sqrt(np.maximum(counts, 1)) # sqrt(N) uncertainty
-    popt, pcov = curve_fit(
-        model_for_fit,
-        centers, 
-        counts,
-        p0=p0,               # initial parameters
-        bounds=bounds,       # param limits
-        sigma=sigma_counts,  # bins with more counts carry more statistical info
-        absolute_sigma=True, # 
-        maxfev=50000,        # maxnumber of model evaluations
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        spe_poisson_model,
+        SPE_FIT_PARAMETER_NAMES,
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="spe_poisson",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
     )
-    model_counts = model_for_fit(centers, *popt) # fitted histogram prediction.
-    chi2 = np.sum(((counts - model_counts) / sigma_counts) ** 2)
-    ndof = len(counts) - len(popt)
+    fit["max_pe"] = max_pe
+    return fit
 
-    parameters = dict(zip(SPE_FIT_PARAMETER_NAMES, popt)) # convert fit vector into dict
-    errors = dict(zip(SPE_FIT_PARAMETER_NAMES, np.sqrt(np.diag(pcov))))
-    diagnostics = []
-    if np.isclose(parameters["spe_area_mV_ns"], bounds[0][3], rtol=0, atol=max(1e-3, 0.02 * min_spe_area_mV_ns)):
-        diagnostics.append("spe_area_mV_ns is close to the lower fit bound")
-    if np.isclose(parameters["mu_led"], bounds[0][-1], rtol=0, atol=3e-4):
-        diagnostics.append("mu_led is close to the lower fit bound")
-    if np.isclose(parameters["mu_led"], bounds[1][-1], rtol=0, atol=1e-2):
-        diagnostics.append("mu_led is close to the upper fit bound")
 
-    return {
-        "counts": counts,
-        "edges": edges,
-        "centers": centers,
-        "bin_width": bin_width,
-        "fit_range": fit_range,
-        "parameters": parameters,
-        "errors": errors,
-        "covariance": pcov,
-        "model_counts": model_counts,
-        "chi2": float(chi2),
-        "ndof": int(ndof),
-        "diagnostics": diagnostics,
-        "initial_parameters": dict(zip(SPE_FIT_PARAMETER_NAMES, p0)),
-        "rough_initial_parameters": dict(zip(SPE_FIT_PARAMETER_NAMES, rough_p0)),
-        "provided_initial_parameters": sorted(provided_p0),
-        "bounds": {
-            "lower": dict(zip(SPE_FIT_PARAMETER_NAMES, bounds[0])),
-            "upper": dict(zip(SPE_FIT_PARAMETER_NAMES, bounds[1])),
-        },
-    }
+def fit_dynode_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 8,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit the charge spectrum with the ProtoDUNE dynode-path SPE model.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        dynode_spe_model,
+        dynode_spe_parameter_names(),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="dynode_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
+
+
+def fit_bellamy_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 8,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit the charge spectrum with the Bellamy et al. PMT response model.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        bellamy_spe_model,
+        bellamy_spe_parameter_names(),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="bellamy_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
+
+
+def fit_free_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 3,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit a charge spectrum with free PE peak areas and asymmetric SPE widths.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        free_spe_model,
+        free_spe_parameter_names(max_pe=max_pe),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="free_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
 
 
 def print_spe_fit_result(fit):
     if "initial_parameters" in fit and "bounds" in fit:
         print("\nInitial fit parameters and bounds:")
-        print("-" * 85)
-        print(f"{'Parameter':<25} {'Initial':>15} {'Lower bound':>20} {'Upper bound':>20}")
-        print("-" * 85)
+        print("-" * 95)
+        print(f"{'Parameter':<25} {'Initial':>15} {'Lower bound':>20} {'Upper bound':>20} {'Fixed':>10}")
+        print("-" * 95)
 
         for name in fit["initial_parameters"]:
             val = fit["initial_parameters"][name]
@@ -1291,13 +1714,10 @@ def print_spe_fit_result(fit):
             high = fit["bounds"]["upper"][name]
             low_str = f"{low:.6g}" if np.isfinite(low) else "-inf"
             high_str = f"{high:.6g}" if np.isfinite(high) else "inf"
-            print(f"{name:<25} {val:>15.6g} {low_str:>20} {high_str:>20}")
+            fixed = name in fit.get("fixed_parameters", {})
+            print(f"{name:<25} {val:>15.6g} {low_str:>20} {high_str:>20} {str(fixed):>10}")
 
-        print("-" * 85)
-
-        provided = fit.get("provided_initial_parameters", [])
-        if provided:
-            print("Externally provided initial parameters: " + ", ".join(provided))
+        print("-" * 95)
 
     print("\nFit results:")
     print("-" * 70)
@@ -1327,6 +1747,12 @@ def print_spe_fit_result(fit):
         print("\nDiagnostics:")
         for diagnostic in fit["diagnostics"]:
             print(f"  - {diagnostic}")
+
+    fixed_parameters = fit.get("fixed_parameters", {})
+    if fixed_parameters:
+        print("\nFixed parameters:")
+        for name, value in fixed_parameters.items():
+            print(f"  - {name} = {value:.6g}")
 
 
 def average_waveforms_by_amplitude(voltage_mV, amplitude_bins_mV):
