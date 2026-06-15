@@ -8,8 +8,6 @@ This makes negative-going PMT pulses have positive charge, with units mV ns.
 
 from __future__ import annotations
 
-import matplotlib.pyplot as plt
-
 import re
 from pathlib import Path
 
@@ -17,7 +15,7 @@ import h5py
 import numpy as np
 
 from scipy.optimize import curve_fit
-from scipy.special import erfc, gammaln
+from scipy.special import erf, erfc, gammaln
 
 
 
@@ -1560,6 +1558,275 @@ def fit_dynode_spe_spectrum(
     return fit
 
 
+# --------- Back-scattering SPE model from arXiv:2604.02826 ---------
+
+def backscatter_spe_parameter_names(max_multi_pe: int = 3) -> list[str]:
+    names = [
+        "n_total",
+        "q0_mV_ns", # q = charge_mV_ns - q0_mV_ns
+        "g1_first_dynode", #dimensionless: the mean number of secondary electrons produced at the first dynode when the primary photoelectron is fully amplified
+        "f_mV_ns", # charge conversion for one secondary electron after the rest of the dynode chain (fully amplified 1PE mean is approximately q0_mV_ns + g1_first_dynode * f_mV_ns)
+        "r", # resolution parameter R for the dynodes after the first dynode. Larger r broadens the amplified response
+        "sigma_ped_mV_ns", # electronics/pedestal charge noise, called sigma_ped in the paper
+        "eta", # fraction of 1PE events that are partially amplified because of inelastic back-scattering at the first dynode. This fills the region between pedestal and the main SPE peak
+        "a_gamma1dy",# fraction of 1PE-like events caused by photons reaching the first dynode directly. In the paper this creates a small pre-pulse-like low-charge peak around charge scale f_mV_ns, not around G1 * f_mV_ns
+        "a_exp", # fraction of very-low-charge events described by an exponentially modified Gaussian. This handles events from bad trajectories or late-stage amplification that create a tail near low charge
+        "alpha_exp_mV_ns", # charge scale/decay constant of the a_exp low-charge exponential component. Larger values make that low-charge tail extend farther.
+        "zeta", # modifies the direct-first-dynode photon component. In the paper it is the ratio between the full second-dynode gain and the average second-dynode gain. In practice, it shifts/broadens the gamma1dy component
+    ]
+    names.extend(f"a_{n_pe}pe" for n_pe in range(2, max_multi_pe + 1)) # optional fractions of explicit multi-photoelectron components
+    return names
+
+
+def continuous_poisson_pdf(x, mean, variance):
+    """Scaled continuous Poisson PDF from Angelino et al. Eq. 2.7."""
+    x = np.asarray(x, dtype=float)
+    y = np.zeros_like(x, dtype=float)
+    mean = np.maximum(mean, 1e-12)
+    variance = np.maximum(variance, 1e-24)
+    rho = mean / variance
+    lam = rho * mean
+    scaled_x = rho * x
+    mask = (x > 0) & (scaled_x > -1.0) & np.isfinite(scaled_x)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore", divide="ignore"):
+        y[mask] = rho * np.exp(-lam + scaled_x[mask] * np.log(lam) - gammaln(1.0 + scaled_x[mask]))
+    y[~np.isfinite(y)] = 0.0
+    return y
+
+
+def angelino_exp_pdf(x, sigma_ped, alpha_exp):
+    """Very-low-charge exponentially modified Gaussian from Eq. 2.21."""
+    x = np.asarray(x, dtype=float)
+    sigma_ped = np.maximum(sigma_ped, 1e-12)
+    alpha_exp = np.maximum(alpha_exp, 1e-12)
+    z = (sigma_ped**2 / alpha_exp - x) / (np.sqrt(2.0) * sigma_ped)
+    exponent = 0.5 * (sigma_ped / alpha_exp) ** 2 - x / alpha_exp
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        y = 0.5 / alpha_exp * np.exp(exponent) * erfc(z)
+    return np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def backscatter_spe_shape_parameters(g1_first_dynode, f_mV_ns, r, sigma_ped_mV_ns, zeta):
+    """Return derived shape quantities for the Angelino et al. SPE model."""
+    g1 = np.maximum(g1_first_dynode, 1e-12)
+    f = np.maximum(f_mV_ns, 1e-12)
+    r = np.maximum(r, 0.0)
+    sigma_ped = np.maximum(sigma_ped_mV_ns, 1e-12)
+    zeta = np.maximum(zeta, 1e-12)
+
+    mu_fa = g1 * f
+    var_fa = g1 * f**2 * (1.0 + r**2) + sigma_ped**2
+
+    mu_l = f * (0.5 - 0.45 * r**2.2)
+    mu_r = f * (g1 - 0.62 - 0.63 * r**1.7)
+    mu_r = np.maximum(mu_r, mu_l + 1e-9 * f)
+    sigma_l = np.sqrt(f**2 * r**2 + sigma_ped**2)
+    sigma_r = np.sqrt(f**2 * g1 * (1.0 + r**2) + sigma_ped**2)
+
+    mean_pa = 0.5 * (mu_r + mu_l) * (1.0 + (sigma_r**2 - sigma_l**2) / (mu_r**2 - mu_l**2))
+    second_moment_pa = (3.0 * sigma_r**2 * mu_r + mu_r**3 - 3.0 * sigma_l**2 * mu_l - mu_l**3) / (
+        3.0 * (mu_r - mu_l)
+    )
+    var_pa = np.maximum(second_moment_pa - mean_pa**2, 1e-12)
+
+    f_gamma = f * zeta
+    r_gamma_sq = ((zeta - 1.0) / zeta) ** 2 / (1.0 + r**2)
+    var_gamma = f_gamma**2 * r_gamma_sq + sigma_ped**2
+
+    return {
+        "mu_fa": mu_fa,
+        "var_fa": var_fa,
+        "mu_l": mu_l,
+        "mu_r": mu_r,
+        "sigma_l": sigma_l,
+        "sigma_r": sigma_r,
+        "mean_pa": mean_pa,
+        "var_pa": var_pa,
+        "f_gamma": f_gamma,
+        "var_gamma": var_gamma,
+    }
+
+
+def backscatter_spe_pdfs(x, parameters):
+    """Return normalized SPE component PDFs for Angelino et al. Eq. 2.23."""
+    p = parameters
+    q = np.asarray(x, dtype=float) - p["q0_mV_ns"]
+    s = backscatter_spe_shape_parameters(
+        p["g1_first_dynode"],
+        p["f_mV_ns"],
+        p["r"],
+        p["sigma_ped_mV_ns"],
+        p["zeta"],
+    )
+
+    fa = continuous_poisson_pdf(q, s["mu_fa"], s["var_fa"])
+    pa = (
+        (1.0 + erf((q - s["mu_l"]) / (np.sqrt(2.0) * s["sigma_l"])))
+        * (1.0 - erf((q - s["mu_r"]) / (np.sqrt(2.0) * s["sigma_r"])))
+        / (4.0 * (s["mu_r"] - s["mu_l"]))
+    )
+    gamma1dy = continuous_poisson_pdf(q, s["f_gamma"], s["var_gamma"])
+    exp_low = angelino_exp_pdf(q, p["sigma_ped_mV_ns"], p["alpha_exp_mV_ns"])
+    return {"fa": fa, "pa": pa, "gamma1dy": gamma1dy, "exp": exp_low}, s
+
+
+def backscatter_spe_mean_variance(parameters):
+    """Return the mean and variance of the 1PE response in charge units."""
+    p = parameters
+    s = backscatter_spe_shape_parameters(
+        p["g1_first_dynode"],
+        p["f_mV_ns"],
+        p["r"],
+        p["sigma_ped_mV_ns"],
+        p["zeta"],
+    )
+    eta = np.clip(p["eta"], 0.0, 1.0)
+    a_gamma = np.clip(p["a_gamma1dy"], 0.0, 1.0)
+    a_exp = np.clip(p["a_exp"], 0.0, 1.0)
+    a_fa = np.clip(1.0 - eta - a_gamma - a_exp, 0.0, 1.0)
+    total = a_fa + eta + a_gamma + a_exp
+    if total <= 0:
+        return p["q0_mV_ns"], p["sigma_ped_mV_ns"] ** 2
+    a_fa, eta, a_gamma, a_exp = [value / total for value in (a_fa, eta, a_gamma, a_exp)]
+
+    mean_exp = p["alpha_exp_mV_ns"]
+    var_exp = p["alpha_exp_mV_ns"] ** 2 + p["sigma_ped_mV_ns"] ** 2
+    means = np.array([s["mu_fa"], s["mean_pa"], s["f_gamma"], mean_exp], dtype=float)
+    variances = np.array([s["var_fa"], s["var_pa"], s["var_gamma"], var_exp], dtype=float)
+    weights = np.array([a_fa, eta, a_gamma, a_exp], dtype=float)
+    mean = float(np.sum(weights * means))
+    variance = float(np.sum(weights * (variances + means**2)) - mean**2)
+    return p["q0_mV_ns"] + mean, np.maximum(variance, 1e-12)
+
+
+def backscatter_spe_model(
+    x,
+    n_total,
+    q0_mV_ns,
+    g1_first_dynode,
+    f_mV_ns,
+    r,
+    sigma_ped_mV_ns,
+    eta,
+    a_gamma1dy,
+    a_exp,
+    alpha_exp_mV_ns,
+    zeta,
+    *multi_pe_fractions,
+    bin_width,
+    max_multi_pe: int = 3,
+):
+    """Angelino et al. 2026 SPE model with back-scattered photoelectrons.
+
+    The 1PE shape follows Eq. 2.23. Optional 2PE, 3PE, ... terms use the
+    Gaussian approximation described below Eq. 2.24.
+    """
+    expected = max(0, max_multi_pe - 1)
+    if len(multi_pe_fractions) != expected:
+        raise ValueError(f"Expected {expected} multi-PE fractions, got {len(multi_pe_fractions)}")
+
+    parameters = dict(
+        zip(
+            backscatter_spe_parameter_names(max_multi_pe=max_multi_pe),
+            [
+                n_total,
+                q0_mV_ns,
+                g1_first_dynode,
+                f_mV_ns,
+                r,
+                sigma_ped_mV_ns,
+                eta,
+                a_gamma1dy,
+                a_exp,
+                alpha_exp_mV_ns,
+                zeta,
+                *multi_pe_fractions,
+            ],
+        )
+    )
+    pdfs, _ = backscatter_spe_pdfs(x, parameters)
+    eta = np.clip(eta, 0.0, 1.0)
+    a_gamma1dy = np.clip(a_gamma1dy, 0.0, 1.0)
+    a_exp = np.clip(a_exp, 0.0, 1.0)
+    a_fa = np.clip(1.0 - eta - a_gamma1dy - a_exp, 0.0, 1.0)
+    spe_pdf = a_fa * pdfs["fa"] + eta * pdfs["pa"] + a_gamma1dy * pdfs["gamma1dy"] + a_exp * pdfs["exp"]
+
+    multi_pe_fractions = [np.clip(value, 0.0, 1.0) for value in multi_pe_fractions]
+    a_1pe = np.clip(1.0 - np.sum(multi_pe_fractions), 0.0, 1.0)
+    y = n_total * bin_width * a_1pe * spe_pdf
+
+    mean_spe, var_spe = backscatter_spe_mean_variance(parameters)
+    sigma_ped_sq = sigma_ped_mV_ns**2
+    for n_pe, fraction in enumerate(multi_pe_fractions, start=2):
+        mean = q0_mV_ns + n_pe * (mean_spe - q0_mV_ns)
+        variance = np.maximum(n_pe * (var_spe - sigma_ped_sq) + sigma_ped_sq, 1e-12)
+        y += n_total * bin_width * fraction * gaussian_pdf(x, mean, np.sqrt(variance))
+
+    return y
+
+
+def backscatter_spe_components(x, parameters, bin_width, max_multi_pe: int = 3):
+    """Return components of the Angelino et al. back-scattering SPE model."""
+    pdfs, _ = backscatter_spe_pdfs(x, parameters)
+    eta = np.clip(parameters["eta"], 0.0, 1.0)
+    a_gamma = np.clip(parameters["a_gamma1dy"], 0.0, 1.0)
+    a_exp = np.clip(parameters["a_exp"], 0.0, 1.0)
+    a_fa = np.clip(1.0 - eta - a_gamma - a_exp, 0.0, 1.0)
+    multi_pe_fractions = [
+        np.clip(parameters[f"a_{n_pe}pe"], 0.0, 1.0)
+        for n_pe in range(2, max_multi_pe + 1)
+    ]
+    a_1pe = np.clip(1.0 - np.sum(multi_pe_fractions), 0.0, 1.0)
+    scale = parameters["n_total"] * bin_width
+
+    components = {
+        "FA 1PE": scale * a_1pe * a_fa * pdfs["fa"],
+        "PA backscatter 1PE": scale * a_1pe * eta * pdfs["pa"],
+        "gamma 1Dy 1PE": scale * a_1pe * a_gamma * pdfs["gamma1dy"],
+        "exp low-charge 1PE": scale * a_1pe * a_exp * pdfs["exp"],
+    }
+
+    mean_spe, var_spe = backscatter_spe_mean_variance(parameters)
+    sigma_ped_sq = parameters["sigma_ped_mV_ns"] ** 2
+    for n_pe, fraction in enumerate(multi_pe_fractions, start=2):
+        mean = parameters["q0_mV_ns"] + n_pe * (mean_spe - parameters["q0_mV_ns"])
+        variance = np.maximum(n_pe * (var_spe - sigma_ped_sq) + sigma_ped_sq, 1e-12)
+        components[f"{n_pe}PE Gaussian"] = (
+            scale * fraction * gaussian_pdf(x, mean, np.sqrt(variance))
+        )
+
+    return components
+
+
+def fit_backscatter_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_multi_pe: int = 3,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit a charge spectrum with the Angelino et al. back-scattering SPE model.
+
+    ``p0`` must be ``{param_name: [initial, lower_bound, upper_bound, is_fixed]}``.
+    Fix ``a_2pe``, ``a_3pe``, ``a_gamma1dy`` or ``a_exp`` to zero when those
+    components are not expected or not constrained by the data.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        backscatter_spe_model,
+        backscatter_spe_parameter_names(max_multi_pe=max_multi_pe),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="backscatter_spe",
+        model_kwargs={"max_multi_pe": max_multi_pe},
+        maxfev=maxfev,
+    )
+    fit["max_multi_pe"] = max_multi_pe
+    return fit
+
+
 # --------- Fit Helpers and wrappers ---------
 
 def parse_fit_parameter_specs(p0, parameter_names):
@@ -1812,6 +2079,7 @@ def fit_result_table(fit, as_dataframe=True):
 # ----------------------------------------------------------------------------------------------
 
 def plot_average_waveforms(time_ns, average_results, ax=None):
+    import matplotlib.pyplot as plt
 
     if ax is None:
         _, ax = plt.subplots(figsize=(8, 6))
@@ -1842,6 +2110,8 @@ def fit_component_function(fit):
         return dynode_spe_components
     if model == "free_spe":
         return free_spe_components
+    if model == "backscatter_spe":
+        return backscatter_spe_components
     return None
 
 
@@ -1872,6 +2142,7 @@ def plot_fit_result(
         Extra keyword arguments passed to ``component_function``. By default,
         ``max_pe`` is taken from the fit dictionary when available.
     """
+    import matplotlib.pyplot as plt
 
     if ax is None or ax_resid is None:
         fig, (ax, ax_resid) = plt.subplots(
@@ -2048,4 +2319,3 @@ def print_spe_fit_result(fit):
         print("\nFixed parameters:")
         for name, value in fixed_parameters.items():
             print(f"  - {name} = {value:.6g}")
-
