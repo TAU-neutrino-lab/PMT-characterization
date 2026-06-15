@@ -8,17 +8,24 @@ This makes negative-going PMT pulses have positive charge, with units mV ns.
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
+
 import re
 from pathlib import Path
 
 import h5py
 import numpy as np
+
 from scipy.optimize import curve_fit
 from scipy.special import erfc, gammaln
 
 
-SEGMENT_RE = re.compile(r"Seg(\d+)Data$")
 
+# ----------------------------------------------------------------------------------------------
+# Read files
+# ----------------------------------------------------------------------------------------------
+
+SEGMENT_RE = re.compile(r"Seg(\d+)Data$")
 
 def segment_number(name: str) -> int | None:
     match = SEGMENT_RE.search(name)
@@ -239,11 +246,6 @@ def iter_keysight_chunks(files, channel: str = "Channel 1", chunk_size: int = 51
             else:
                 raise KeyError(f"Could not find segment datasets or a waveform dataset in {h5_file.filename}")
 
-
-
-
-
-
 def standard_units(time, voltage, metadata):
     """Convert a direct-reader output from seconds/volts to ns/mV."""
     voltage_mV = voltage * 1e3
@@ -251,6 +253,9 @@ def standard_units(time, voltage, metadata):
     time_ns = time * 1e9
     return time_ns, voltage_mV, adc_step_mV, "ns", "mV"
 
+# ----------------------------------------------------------------------------------------------
+# Baseline Subtraction
+# ----------------------------------------------------------------------------------------------
 
 def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_window=None):
     """Subtract each waveform baseline measured in ``baseline_window_ns``."""
@@ -267,6 +272,9 @@ def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_win
     voltage_bs_mV = voltage_mV - baseline_mV[:, None]
     return voltage_bs_mV, baseline_mV
 
+# ----------------------------------------------------------------------------------------------
+# Saturated wavefroms
+# ----------------------------------------------------------------------------------------------
 
 def saturated_waveform_mask(
     voltage_mV,
@@ -394,8 +402,9 @@ def collect_saturation_selection(
         "max_saturated_samples": max_saturated_samples,
     }
 
-
-
+# ----------------------------------------------------------------------------------------------
+# Compute charge
+# ----------------------------------------------------------------------------------------------
 
 def compute_charge_window(time_ns, voltage_bs_mV, window_ns=None, tmin_ns=None, tmax_ns=None):
     """Integrate a fixed window and return positive charge for negative pulses."""
@@ -433,15 +442,122 @@ def compute_charge_around_minimum(time_ns, voltage_bs_mV, pre_samples: int = 20,
     return charge
 
 
-
-
-
 def _window_mask(time_ns, window_ns):
     mask = (time_ns >= window_ns[0]) & (time_ns <= window_ns[1])
     if not np.any(mask):
         raise ValueError(f"Window {window_ns} contains no samples")
     return mask
 
+
+def compute_charges_for_window(
+    files,
+    baseline_window_ns,
+    integration_window_ns,
+    selection_mask=None,
+    channel: str = "Channel 1",
+    chunk_size: int = 512,
+):
+    """Compute charges for one fixed window, optionally applying a precomputed mask."""
+    return compute_charges_for_windows(
+        files,
+        baseline_window_ns,
+        [integration_window_ns],
+        selection_mask=selection_mask,
+        channel=channel,
+        chunk_size=chunk_size,
+    )[tuple(map(float, integration_window_ns))]
+
+
+def compute_charges_for_windows(
+    files,
+    baseline_window_ns,
+    integration_windows_ns,
+    selection_mask=None,
+    channel: str = "Channel 1",
+    chunk_size: int = 512,
+):
+    """Compute charges for many fixed windows in one pass through the files.
+
+    ``selection_mask`` is optional and must be a boolean array in the same event
+    order yielded by ``iter_keysight_chunks``. Selection is deliberately external
+    to this function: this helper only applies a mask it is given.
+    """
+    windows = [tuple(map(float, window)) for window in integration_windows_ns]
+    charge_parts = {window: [] for window in windows}
+    selection_mask = _prepare_selection_mask(selection_mask)
+    selection_offset = 0
+
+    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
+        time_ns = chunk["time_ns"]
+        voltage_bs_mV, _ = subtract_baseline(
+            time_ns,
+            chunk["voltage_mV"],
+            baseline_window_ns=baseline_window_ns,
+        )
+
+        # Cumulative trapezoid integral lets each fixed window become one
+        # subtraction rather than a fresh integration over all samples.
+        dt = np.diff(time_ns)
+        trap = 0.5 * (voltage_bs_mV[:, :-1] + voltage_bs_mV[:, 1:]) * dt
+        cumulative = np.concatenate(
+            [np.zeros((voltage_bs_mV.shape[0], 1), dtype=np.float64), np.cumsum(trap, axis=1)],
+            axis=1,
+        )
+        if selection_mask is None:
+            chunk_selection = slice(None)
+        else:
+            chunk_selection, selection_offset = _selection_for_chunk(
+                selection_mask,
+                selection_offset,
+                voltage_bs_mV.shape[0],
+            )
+
+        for window in windows:
+            start = int(np.searchsorted(time_ns, window[0], side="left"))
+            stop = int(np.searchsorted(time_ns, window[1], side="right") - 1)
+            if stop <= start:
+                raise ValueError(f"Integration window {window} contains too few samples")
+            charge_parts[window].append(-(cumulative[chunk_selection, stop] - cumulative[chunk_selection, start]))
+
+    _check_selection_consumed(selection_mask, selection_offset)
+
+    return {window: np.concatenate(parts) for window, parts in charge_parts.items()}
+
+def scan_integration_windows(
+    files,
+    baseline_window_ns,
+    starts_ns,
+    stops_ns,
+    channel: str = "Channel 1",
+    chunk_size: int = 512,
+    min_width_ns: float = 1.0,
+    selection_mask=None,
+):
+    windows = [(float(start), float(stop)) for start in starts_ns for stop in stops_ns if stop - start >= min_width_ns]
+    charges_by_window = compute_charges_for_windows(
+        files,
+        baseline_window_ns,
+        windows,
+        selection_mask=selection_mask,
+        channel=channel,
+        chunk_size=chunk_size,
+    )
+
+    results = []
+    for window, charge in charges_by_window.items():
+        metrics = score_charge_spectrum(charge)
+        results.append(
+            {
+                "window_ns": window,
+                "charge_mV_ns": charge,
+                **metrics,
+            }
+        )
+    return sorted(results, key=lambda row: row["score"], reverse=True)
+
+# ----------------------------------------------------------------------------------------------
+# Properties and selection
+# ----------------------------------------------------------------------------------------------
 
 def peak_properties(time_ns, voltage_bs_mV, search_window_ns=None, polarity: str = "negative"):
     """Measure peak time, amplitude, and sample index for each waveform.
@@ -819,21 +935,22 @@ def collect_peak_time_voltage_selection(
     _check_selection_consumed(selection_mask, selection_offset)
     keep_mask = np.concatenate(kept_masks)
     return {
-        "keep_mask": keep_mask,
+        "keep_mask": keep_mask, # True means the event passed the peak timing/voltage selection.
         "n_total": int(len(keep_mask)),
-        "n_kept": int(np.sum(keep_mask)),
-        "efficiency": float(np.mean(keep_mask)) if len(keep_mask) else np.nan,
-        "real_peak_mask": np.concatenate(real_peak_masks),
-        "in_peak_window_mask": np.concatenate(in_peak_window_masks),
-        "peak_time_ns": np.concatenate(peak_times),
-        "peak_value_mV": np.concatenate(peak_values),
-        "peak_amplitude_mV": np.concatenate(peak_amplitudes),
-        "t_low_ns": np.concatenate(t_low),
-        "t_high_ns": np.concatenate(t_high),
-        "rise_time_ns": np.concatenate(rise_times),
-        "rise_time_valid": np.concatenate(rise_time_valid),
-        "low_fraction": low_fraction,
-        "high_fraction": high_fraction,
+        "n_kept":  int(np.sum(keep_mask)),
+        "efficiency": float(np.mean(keep_mask)) if len(keep_mask) else np.nan, # kept fraction, n_kept / n_total
+        "real_peak_mask": np.concatenate(real_peak_masks), # boolean mask for events whose peak passes the “real pulse” voltage threshold (in the full sample)
+        "in_peak_window_mask": np.concatenate(in_peak_window_masks), # boolean mask for events whose measured peak time is inside peak_window_ns
+        "peak_time_ns":  np.concatenate(peak_times),  # measured peak time for each event
+        "peak_value_mV": np.concatenate(peak_values), # signed voltage value at the peak. For negative PMT pulses this is usually negative
+        "peak_amplitude_mV": np.concatenate(peak_amplitudes), # positive pulse amplitude. For negative pulses this is basically -peak_value_mV
+        
+        "t_low_ns":  np.concatenate(t_low),  # time where the rising edge first crosses low_fraction * peak_amplitude
+        "t_high_ns": np.concatenate(t_high), # time where the rising edge first crosses high_fraction * peak_amplitude
+        "rise_time_ns": np.concatenate(rise_times), # t_high_ns - t_low_ns
+        "rise_time_valid": np.concatenate(rise_time_valid), # boolean mask saying whether the rise time was finite and non-negative
+        "low_fraction":  low_fraction,  # the fractions used for the rise-time calculation (usually 0.1)
+        "high_fraction": high_fraction, # the fractions used for the rise-time calculation (usually 0.9)
     }
 
 
@@ -906,89 +1023,43 @@ def summarize_waveforms(files, baseline_window_ns, selection_mask=None, channel:
     }
 
 
-def compute_charges_for_window(
-    files,
-    baseline_window_ns,
-    integration_window_ns,
-    selection_mask=None,
-    channel: str = "Channel 1",
-    chunk_size: int = 512,
-):
-    """Compute charges for one fixed window, optionally applying a precomputed mask."""
-    return compute_charges_for_windows(
-        files,
-        baseline_window_ns,
-        [integration_window_ns],
-        selection_mask=selection_mask,
-        channel=channel,
-        chunk_size=chunk_size,
-    )[tuple(map(float, integration_window_ns))]
+def average_waveforms_by_amplitude(voltage_mV, amplitude_bins_mV):
+    amplitude_mV = -np.min(voltage_mV, axis=1)
+    results = []
 
+    for low, high in zip(amplitude_bins_mV[:-1], amplitude_bins_mV[1:]):
+        mask = (amplitude_mV >= low) & (amplitude_mV < high)
+        n_events = int(np.sum(mask))
 
-def compute_charges_for_windows(
-    files,
-    baseline_window_ns,
-    integration_windows_ns,
-    selection_mask=None,
-    channel: str = "Channel 1",
-    chunk_size: int = 512,
-):
-    """Compute charges for many fixed windows in one pass through the files.
-
-    ``selection_mask`` is optional and must be a boolean array in the same event
-    order yielded by ``iter_keysight_chunks``. Selection is deliberately external
-    to this function: this helper only applies a mask it is given.
-    """
-    windows = [tuple(map(float, window)) for window in integration_windows_ns]
-    charge_parts = {window: [] for window in windows}
-    selection_mask = _prepare_selection_mask(selection_mask)
-    selection_offset = 0
-
-    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
-        time_ns = chunk["time_ns"]
-        voltage_bs_mV, _ = subtract_baseline(
-            time_ns,
-            chunk["voltage_mV"],
-            baseline_window_ns=baseline_window_ns,
-        )
-
-        # Cumulative trapezoid integral lets each fixed window become one
-        # subtraction rather than a fresh integration over all samples.
-        dt = np.diff(time_ns)
-        trap = 0.5 * (voltage_bs_mV[:, :-1] + voltage_bs_mV[:, 1:]) * dt
-        cumulative = np.concatenate(
-            [np.zeros((voltage_bs_mV.shape[0], 1), dtype=np.float64), np.cumsum(trap, axis=1)],
-            axis=1,
-        )
-        if selection_mask is None:
-            chunk_selection = slice(None)
+        if n_events > 0:
+            average_waveform = np.mean(voltage_mV[mask], axis=0)
+            mean_amplitude = np.mean(amplitude_mV[mask])
+            std_amplitude = np.std(amplitude_mV[mask])
         else:
-            chunk_selection, selection_offset = _selection_for_chunk(
-                selection_mask,
-                selection_offset,
-                voltage_bs_mV.shape[0],
-            )
+            average_waveform = None
+            mean_amplitude = np.nan
+            std_amplitude = np.nan
 
-        for window in windows:
-            start = int(np.searchsorted(time_ns, window[0], side="left"))
-            stop = int(np.searchsorted(time_ns, window[1], side="right") - 1)
-            if stop <= start:
-                raise ValueError(f"Integration window {window} contains too few samples")
-            charge_parts[window].append(-(cumulative[chunk_selection, stop] - cumulative[chunk_selection, start]))
+        results.append(
+            {
+                "bin": (low, high),
+                "n_events": n_events,
+                "mean_amplitude_mV": mean_amplitude,
+                "std_amplitude_mV": std_amplitude,
+                "average_waveform": average_waveform,
+                "mask": mask,
+            }
+        )
 
-    _check_selection_consumed(selection_mask, selection_offset)
+    return results
 
-    return {window: np.concatenate(parts) for window, parts in charge_parts.items()}
+# ----------------------------------------------------------------------------------------------
+# Fits
+# when possible, the notation is taken from Bellamy et. al's paper 
+# absolute calibration and monitoring of a spectrometric channel using a photomultiplier
+# ----------------------------------------------------------------------------------------------
 
-
-def gaussian(x, amplitude, mean, sigma):
-    sigma = np.maximum(sigma, 1e-9)
-    return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
-
-
-def two_gaussian_plus_constant(x, a0, m0, s0, a1, m1, s1, c):
-    return gaussian(x, a0, m0, s0) + gaussian(x, a1, m1, s1) + c
-
+# --------- Rough estimate fo initial parameters ---------
 
 def score_charge_spectrum(charge_mV_ns, scale_mV_ns: float = 50.0):
     """Return simple window-quality metrics from a charge spectrum.
@@ -1028,90 +1099,15 @@ def score_charge_spectrum(charge_mV_ns, scale_mV_ns: float = 50.0):
     }
 
 
-def scan_integration_windows(
-    files,
-    baseline_window_ns,
-    starts_ns,
-    stops_ns,
-    channel: str = "Channel 1",
-    chunk_size: int = 512,
-    min_width_ns: float = 1.0,
-    selection_mask=None,
-):
-    windows = [(float(start), float(stop)) for start in starts_ns for stop in stops_ns if stop - start >= min_width_ns]
-    charges_by_window = compute_charges_for_windows(
-        files,
-        baseline_window_ns,
-        windows,
-        selection_mask=selection_mask,
-        channel=channel,
-        chunk_size=chunk_size,
-    )
+# --------- PDFs ---------
 
-    results = []
-    for window, charge in charges_by_window.items():
-        metrics = score_charge_spectrum(charge)
-        results.append(
-            {
-                "window_ns": window,
-                "charge_mV_ns": charge,
-                **metrics,
-            }
-        )
-    return sorted(results, key=lambda row: row["score"], reverse=True)
+def gaussian(x, amplitude, mean, sigma):
+    sigma = np.maximum(sigma, 1e-9)
+    return amplitude * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
 
 
-def spe_poisson_model(
-    x,
-    n_total,
-    pedestal,
-    sigma_ped,
-    spe_area,
-    sigma_spe,
-    mu_led,
-    bin_width,
-    max_pe: int = 8,
-):
-    """Pedestal plus Poisson-weighted Gaussian photoelectron peaks."""
-    y = np.zeros_like(x, dtype=float)
-    mu_led = np.maximum(mu_led, 1e-9)
-
-    for n_pe in range(max_pe + 1):
-        log_weight = -mu_led + n_pe * np.log(mu_led) - gammaln(n_pe + 1)
-        weight = np.exp(log_weight)
-        mean = pedestal + n_pe * spe_area
-        sigma = np.sqrt(sigma_ped**2 + n_pe * sigma_spe**2)
-        y += n_total * bin_width * weight / (np.sqrt(2 * np.pi) * sigma) * np.exp(
-            -0.5 * ((x - mean) / sigma) ** 2
-        )
-    return y
-
-
-def spe_poisson_components(
-    x,
-    n_total,
-    pedestal,
-    sigma_ped,
-    spe_area,
-    sigma_spe,
-    mu_led,
-    bin_width,
-    max_pe: int = 8,
-):
-    """Return the individual n-photoelectron Gaussian components."""
-    components = {}
-    mu_led = np.maximum(mu_led, 1e-9)
-
-    for n_pe in range(max_pe + 1):
-        log_weight = -mu_led + n_pe * np.log(mu_led) - gammaln(n_pe + 1)
-        weight = np.exp(log_weight)
-        mean = pedestal + n_pe * spe_area
-        sigma = np.sqrt(sigma_ped**2 + n_pe * sigma_spe**2)
-        components[n_pe] = n_total * bin_width * weight / (np.sqrt(2 * np.pi) * sigma) * np.exp(
-            -0.5 * ((x - mean) / sigma) ** 2
-        )
-
-    return components
+def two_gaussian_plus_constant(x, a0, m0, s0, a1, m1, s1, c):
+    return gaussian(x, a0, m0, s0) + gaussian(x, a1, m1, s1) + c
 
 
 def gaussian_pdf(x, mean, sigma):
@@ -1127,14 +1123,221 @@ def exponential_gaussian_pdf(x, mean, sigma, alpha):
     return 0.5 * alpha * np.exp(alpha * (mean - x) + 0.5 * (alpha * sigma) ** 2) * erfc(z)
 
 
+def asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right):
+    """Normalized split-normal PDF with different left/right widths."""
+    sigma_left = np.maximum(sigma_left, 1e-9)
+    sigma_right = np.maximum(sigma_right, 1e-9)
+    norm = np.sqrt(2.0 / np.pi) / (sigma_left + sigma_right)
+    sigma = np.where(x < mean, sigma_left, sigma_right)
+    return norm * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+
+# --------- Simple Poisson Fit ---------
+
+def poisson_spe_parameter_names() -> list[str]:
+    return [
+        "n_total",
+        "mu_pe",
+        "q0_mV_ns",
+        "sigma0_mV_ns",
+        "q1_mV_ns",
+        "sigma1_mV_ns",
+    ]
+
+
+def poisson_spe_model(
+    x,
+    n_total,
+    mu_pe,
+    q0,
+    sigma0,
+    q1,
+    sigma1,
+    bin_width,
+    max_pe: int = 8,
+):
+    """Bellamy-style ideal Gaussian PM response.
+
+    Parameter names follow Bellamy notation:
+    Q0 -> ``q0_mV_ns``, sigma0 -> ``sigma0_mV_ns``,
+    Q1 -> ``q1_mV_ns``, sigma1 -> ``sigma1_mV_ns``.
+    """
+    y = np.zeros_like(x, dtype=float)
+    mu_pe = np.maximum(mu_pe, 1e-12)
+
+    for n_pe in range(max_pe + 1):
+        log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
+        weight = np.exp(log_weight)
+        mean = q0 + n_pe * q1
+        sigma = np.sqrt(sigma0**2 + n_pe * sigma1**2)
+        y += n_total * bin_width * weight * gaussian_pdf(x, mean, sigma)
+    return y
+
+
+def poisson_spe_components(
+    x,
+    parameters,
+    bin_width,
+    max_pe: int = 8,
+):
+    """Return the individual n-photoelectron Gaussian components."""
+    components = {}
+    p = parameters
+    mu_pe = np.maximum(p["mu_pe"], 1e-12)
+
+    for n_pe in range(max_pe + 1):
+        log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
+        weight = np.exp(log_weight)
+        mean = p["q0_mV_ns"] + n_pe * p["q1_mV_ns"]
+        sigma = np.sqrt(p["sigma0_mV_ns"] ** 2 + n_pe * p["sigma1_mV_ns"] ** 2)
+        components[n_pe] = p["n_total"] * bin_width * weight * gaussian_pdf(x, mean, sigma)
+
+    return components
+
+
+def fit_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 8,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit the charge spectrum with the Poisson-weighted SPE model.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        poisson_spe_model,
+        poisson_spe_parameter_names(),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="poisson_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
+
+
+# --------- AsymmetricPoisson Fit ---------
+
+def free_spe_parameter_names(max_pe: int = 3) -> list[str]:
+    return [
+        "n_pedestal",
+        "q0_mV_ns",
+        "sigma0_mV_ns",
+        "q1_mV_ns",
+        "sigma1_left_mV_ns",
+        "sigma1_right_mV_ns",
+        *[f"n_{n_pe}pe" for n_pe in range(1, max_pe + 1)],
+        "constant_per_bin",
+    ]
+
+
+def free_spe_model(
+    x,
+    n_pedestal,
+    pedestal,
+    sigma_ped,
+    spe_area,
+    sigma_spe_left,
+    sigma_spe_right,
+    *peak_areas_and_constant,
+    bin_width,
+    max_pe: int = 3,
+):
+    """Pedestal plus free-area asymmetric PE peaks.
+
+    Unlike ``poisson_spe_model``, this does not constrain the PE peak areas to
+    follow a Poisson law. That is often a better diagnostic model for dark-count
+    or threshold-selected charge spectra.
+    """
+    if len(peak_areas_and_constant) != max_pe + 1:
+        raise ValueError(f"Expected {max_pe + 1} trailing parameters, got {len(peak_areas_and_constant)}")
+
+    peak_areas = peak_areas_and_constant[:max_pe]
+    constant_per_bin = peak_areas_and_constant[-1]
+
+    y = n_pedestal * bin_width * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped)
+
+    for n_pe, n_peak in enumerate(peak_areas, start=1):
+        mean = pedestal + n_pe * spe_area
+        sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_left**2)
+        sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_right**2)
+        y += n_peak * bin_width * asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right)
+
+    return y + constant_per_bin
+
+
+def free_spe_components(x, parameters, bin_width, max_pe: int = 3):
+    """Return the pedestal, PE, and constant components of ``free_spe_model``."""
+    pedestal = parameters["q0_mV_ns"]
+    sigma_ped = parameters["sigma0_mV_ns"]
+    spe_area = parameters["q1_mV_ns"]
+    sigma_left = parameters["sigma1_left_mV_ns"]
+    sigma_right = parameters["sigma1_right_mV_ns"]
+
+    components = {
+        "pedestal": parameters["n_pedestal"]
+        * bin_width
+        * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped),
+        "constant": np.full_like(x, parameters["constant_per_bin"], dtype=float),
+    }
+
+    for n_pe in range(1, max_pe + 1):
+        mean = pedestal + n_pe * spe_area
+        peak_sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_left**2)
+        peak_sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_right**2)
+        components[f"{n_pe} PE"] = (
+            parameters[f"n_{n_pe}pe"]
+            * bin_width
+            * asymmetric_gaussian_pdf(x, mean, peak_sigma_left, peak_sigma_right)
+        )
+
+    return components
+
+
+def fit_free_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 3,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit a charge spectrum with free PE peak areas and asymmetric SPE widths.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+ 
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        free_spe_model,
+        free_spe_parameter_names(max_pe=max_pe),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="free_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
+
+
+# --------- Bellamy ---------
+
+
 def bellamy_spe_parameter_names() -> list[str]:
     return [
         "n_total",
         "mu_pe",
-        "pedestal_mV_ns",
-        "sigma_pedestal_mV_ns",
-        "spe_area_mV_ns",
-        "sigma_spe_mV_ns",
+        "q0_mV_ns",
+        "sigma0_mV_ns",
+        "q1_mV_ns",
+        "sigma1_mV_ns",
         "background_probability",
         "background_slope_per_mV_ns",
     ]
@@ -1186,8 +1389,8 @@ def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
     for n_pe in range(max_pe + 1):
         log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
         weight = np.exp(log_weight)
-        mean = p["pedestal_mV_ns"] + n_pe * p["spe_area_mV_ns"]
-        sigma = np.sqrt(p["sigma_pedestal_mV_ns"] ** 2 + n_pe * p["sigma_spe_mV_ns"] ** 2)
+        mean = p["q0_mV_ns"] + n_pe * p["q1_mV_ns"]
+        sigma = np.sqrt(p["sigma0_mV_ns"] ** 2 + n_pe * p["sigma1_mV_ns"] ** 2)
         response = (1.0 - w) * gaussian_pdf(x, mean, sigma)
         response += w * exponential_gaussian_pdf(x, mean, sigma, p["background_slope_per_mV_ns"])
         components[n_pe] = p["n_total"] * bin_width * weight * response
@@ -1195,12 +1398,40 @@ def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
     return components
 
 
+def fit_bellamy_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 8,
+    p0=None,
+    maxfev: int = 100000,
+):
+    """Fit the charge spectrum with the Bellamy et al. PMT response model.
+
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    """
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        bellamy_spe_model,
+        bellamy_spe_parameter_names(),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="bellamy_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
+
+# --------- 2 paths ---------
+
 def dynode_spe_parameter_names() -> list[str]:
     return [
         "n_total",
         "mu_pe",
-        "pedestal_mV_ns",
-        "sigma_pedestal_mV_ns",
+        "q0_mV_ns",
+        "sigma0_mV_ns",
         "g1_mV_ns",
         "sigma_g1_mV_ns",
         "g2_mV_ns",
@@ -1287,9 +1518,9 @@ def dynode_spe_components(x, parameters, bin_width, max_pe: int = 8):
             if n_first:
                 log_binomial += n_first * np.log(np.maximum(1.0 - alpha, 1e-300))
             weight = np.exp(log_poisson + log_binomial)
-            mean = p["pedestal_mV_ns"] + n_first * p["g1_mV_ns"] + n_second * p["g2_mV_ns"]
+            mean = p["q0_mV_ns"] + n_first * p["g1_mV_ns"] + n_second * p["g2_mV_ns"]
             sigma = np.sqrt(
-                p["sigma_pedestal_mV_ns"] ** 2
+                p["sigma0_mV_ns"] ** 2
                 + n_first * p["sigma_g1_mV_ns"] ** 2
                 + n_second * p["sigma_g2_mV_ns"] ** 2
             )
@@ -1301,90 +1532,34 @@ def dynode_spe_components(x, parameters, bin_width, max_pe: int = 8):
     return components
 
 
-def asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right):
-    """Normalized split-normal PDF with different left/right widths."""
-    sigma_left = np.maximum(sigma_left, 1e-9)
-    sigma_right = np.maximum(sigma_right, 1e-9)
-    norm = np.sqrt(2.0 / np.pi) / (sigma_left + sigma_right)
-    sigma = np.where(x < mean, sigma_left, sigma_right)
-    return norm * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
-
-
-def free_spe_parameter_names(max_pe: int = 3) -> list[str]:
-    return [
-        "n_pedestal",
-        "pedestal_mV_ns",
-        "sigma_pedestal_mV_ns",
-        "spe_area_mV_ns",
-        "sigma_spe_left_mV_ns",
-        "sigma_spe_right_mV_ns",
-        *[f"n_{n_pe}pe" for n_pe in range(1, max_pe + 1)],
-        "constant_per_bin",
-    ]
-
-
-def free_spe_model(
-    x,
-    n_pedestal,
-    pedestal,
-    sigma_ped,
-    spe_area,
-    sigma_spe_left,
-    sigma_spe_right,
-    *peak_areas_and_constant,
-    bin_width,
-    max_pe: int = 3,
+def fit_dynode_spe_spectrum(
+    charge_mV_ns,
+    fit_range=None,
+    bins: int = 250,
+    max_pe: int = 8,
+    p0=None,
+    maxfev: int = 100000,
 ):
-    """Pedestal plus free-area asymmetric PE peaks.
+    """Fit the charge spectrum with the ProtoDUNE dynode-path SPE model.
 
-    Unlike ``spe_poisson_model``, this does not constrain the PE peak areas to
-    follow a Poisson law. That is often a better diagnostic model for dark-count
-    or threshold-selected charge spectra.
+    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
     """
-    if len(peak_areas_and_constant) != max_pe + 1:
-        raise ValueError(f"Expected {max_pe + 1} trailing parameters, got {len(peak_areas_and_constant)}")
-
-    peak_areas = peak_areas_and_constant[:max_pe]
-    constant_per_bin = peak_areas_and_constant[-1]
-
-    y = n_pedestal * bin_width * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped)
-
-    for n_pe, n_peak in enumerate(peak_areas, start=1):
-        mean = pedestal + n_pe * spe_area
-        sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_left**2)
-        sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_spe_right**2)
-        y += n_peak * bin_width * asymmetric_gaussian_pdf(x, mean, sigma_left, sigma_right)
-
-    return y + constant_per_bin
+    fit = fit_histogram_model(
+        charge_mV_ns,
+        dynode_spe_model,
+        dynode_spe_parameter_names(),
+        p0=p0,
+        fit_range=fit_range,
+        bins=bins,
+        model_name="dynode_spe",
+        model_kwargs={"max_pe": max_pe},
+        maxfev=maxfev,
+    )
+    fit["max_pe"] = max_pe
+    return fit
 
 
-def free_spe_components(x, parameters, bin_width, max_pe: int = 3):
-    """Return the pedestal, PE, and constant components of ``free_spe_model``."""
-    pedestal = parameters["pedestal_mV_ns"]
-    sigma_ped = parameters["sigma_pedestal_mV_ns"]
-    spe_area = parameters["spe_area_mV_ns"]
-    sigma_left = parameters["sigma_spe_left_mV_ns"]
-    sigma_right = parameters["sigma_spe_right_mV_ns"]
-
-    components = {
-        "pedestal": parameters["n_pedestal"]
-        * bin_width
-        * asymmetric_gaussian_pdf(x, pedestal, sigma_ped, sigma_ped),
-        "constant": np.full_like(x, parameters["constant_per_bin"], dtype=float),
-    }
-
-    for n_pe in range(1, max_pe + 1):
-        mean = pedestal + n_pe * spe_area
-        peak_sigma_left = np.sqrt(sigma_ped**2 + n_pe * sigma_left**2)
-        peak_sigma_right = np.sqrt(sigma_ped**2 + n_pe * sigma_right**2)
-        components[f"{n_pe} PE"] = (
-            parameters[f"n_{n_pe}pe"]
-            * bin_width
-            * asymmetric_gaussian_pdf(x, mean, peak_sigma_left, peak_sigma_right)
-        )
-
-    return components
-
+# --------- Fit Helpers and wrappers ---------
 
 def parse_fit_parameter_specs(p0, parameter_names):
     """Parse ``{name: [initial, lower, upper, is_fixed]}`` fit specs.
@@ -1583,122 +1758,241 @@ def default_fit_range(charge_mV_ns, low_quantile=0.001, high_quantile=0.98, pad_
     return float(low - pad), float(high + pad)
 
 
-SPE_FIT_PARAMETER_NAMES = [
-    "n_total",
-    "pedestal_mV_ns",
-    "sigma_pedestal_mV_ns",
-    "spe_area_mV_ns",
-    "sigma_spe_mV_ns",
-    "mu_led",
-]
 
+def fit_result_table(fit, as_dataframe=True):
+    """Summarize initial values, bounds, fixed flags, values, and errors.
 
-def fit_spe_spectrum(
-    charge_mV_ns,
-    fit_range=None,
-    bins: int = 250,
-    max_pe: int = 8,
-    p0=None,
-    maxfev: int = 100000,
-):
-    """Fit the charge spectrum with the Poisson-weighted SPE model.
-
-    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    Parameters
+    ----------
+    fit
+        Fit dictionary returned by ``fit_histogram_model`` or one of its model
+        wrappers.
+    as_dataframe
+        If True, return a pandas DataFrame when pandas is available. If pandas
+        is not installed, a list of dictionaries is returned instead.
     """
-    fit = fit_histogram_model(
-        charge_mV_ns,
-        spe_poisson_model,
-        SPE_FIT_PARAMETER_NAMES,
-        p0=p0,
-        fit_range=fit_range,
-        bins=bins,
-        model_name="spe_poisson",
-        model_kwargs={"max_pe": max_pe},
-        maxfev=maxfev,
-    )
-    fit["max_pe"] = max_pe
-    return fit
+    parameter_names = fit.get("parameter_names")
+    if parameter_names is None:
+        parameter_names = list(fit.get("parameters", {}).keys())
+
+    initial = fit.get("initial_parameters", {})
+    bounds = fit.get("bounds", {})
+    lower = bounds.get("lower", {})
+    upper = bounds.get("upper", {})
+    fixed_parameters = fit.get("fixed_parameters", {})
+    parameters = fit.get("parameters", {})
+    errors = fit.get("errors", {})
+
+    rows = []
+    for name in parameter_names:
+        rows.append(
+            {
+                "parameter": name,
+                "initial": initial.get(name, np.nan),
+                "lower_bound": lower.get(name, np.nan),
+                "upper_bound": upper.get(name, np.nan),
+                "fixed": name in fixed_parameters,
+                "fit_value": parameters.get(name, np.nan),
+                "fit_error": errors.get(name, np.nan),
+            }
+        )
+
+    if as_dataframe:
+        try:
+            import pandas as pd
+
+            return pd.DataFrame(rows)
+        except ImportError:
+            pass
+    return rows
+
+# ----------------------------------------------------------------------------------------------
+# Plots / Printouts
+# ----------------------------------------------------------------------------------------------
+
+def plot_average_waveforms(time_ns, average_results, ax=None):
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(8, 6))
+
+    for result in average_results:
+        wf = result["average_waveform"]
+        if wf is None:
+            continue
+
+        low, high = result["bin"]
+        ax.plot(time_ns, wf, label=f"{low}-{high} mV (N={result['n_events']})")
+
+    ax.set_xlabel("Time [ns]")
+    ax.set_ylabel("Voltage [mV]")
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    return ax
 
 
-def fit_dynode_spe_spectrum(
-    charge_mV_ns,
-    fit_range=None,
-    bins: int = 250,
-    max_pe: int = 8,
-    p0=None,
-    maxfev: int = 100000,
+def fit_component_function(fit):
+    """Return the component helper corresponding to a standard fit model."""
+    model = fit.get("model")
+    if model == "poisson_spe":
+        return poisson_spe_components
+    if model == "bellamy_spe":
+        return bellamy_spe_components
+    if model == "dynode_spe":
+        return dynode_spe_components
+    if model == "free_spe":
+        return free_spe_components
+    return None
+
+
+def plot_fit_result(
+    fit,
+    title=None,
+    component_function=None,
+    component_kwargs=None,
+    ax=None,
+    ax_resid=None,
+    show_components=True,
+    show_errorbars=True,
+    logscale=True,
+    ylims=None,
+    residual_ylim=(-8, 8),
 ):
-    """Fit the charge spectrum with the ProtoDUNE dynode-path SPE model.
+    """Plot histogram data, total fit, model components, and residuals.
 
-    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
+    Parameters
+    ----------
+    fit
+        Fit dictionary returned by ``fit_histogram_model`` or one of its model
+        wrappers.
+    component_function
+        Optional callable with signature ``f(x, parameters, bin_width, **kwargs)``.
+        If omitted, the function is chosen automatically for known models.
+    component_kwargs
+        Extra keyword arguments passed to ``component_function``. By default,
+        ``max_pe`` is taken from the fit dictionary when available.
     """
-    fit = fit_histogram_model(
-        charge_mV_ns,
-        dynode_spe_model,
-        dynode_spe_parameter_names(),
-        p0=p0,
-        fit_range=fit_range,
-        bins=bins,
-        model_name="dynode_spe",
-        model_kwargs={"max_pe": max_pe},
-        maxfev=maxfev,
-    )
-    fit["max_pe"] = max_pe
-    return fit
+
+    if ax is None or ax_resid is None:
+        fig, (ax, ax_resid) = plt.subplots(
+            2,
+            1,
+            figsize=(9, 7),
+            sharex=True,
+            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+        )
+    else:
+        fig = ax.figure
+
+    centers = fit["centers"]
+    counts = fit["counts"]
+    model_counts = fit["model_counts"]
+    counts_unc = np.sqrt(np.maximum(counts, 1))
+    residuals = (counts - model_counts) / counts_unc
+
+    if show_errorbars:
+        ax.errorbar(
+            centers,
+            counts,
+            yerr=counts_unc,
+            fmt=".",
+            ms=3,
+            color="black",
+            alpha=0.75,
+            label="data",
+        )
+    else:
+        ax.plot(centers, counts, ".", ms=3, color="black", alpha=0.75, label="data")
+
+    ax.plot(centers, model_counts, color="tab:red", lw=2.2, label="total fit")
+
+    if show_components:
+        if component_function is None:
+            component_function = fit_component_function(fit)
+        if component_function is not None:
+            if component_kwargs is None:
+                component_kwargs = {}
+            if "max_pe" not in component_kwargs and "max_pe" in fit:
+                component_kwargs = {**component_kwargs, "max_pe": fit["max_pe"]}
+            components = component_function(
+                centers,
+                fit["parameters"],
+                fit["bin_width"],
+                **component_kwargs,
+            )
+            for key, y_component in components.items():
+                label = f"{key} PE" if isinstance(key, (int, np.integer)) else str(key)
+                ax.plot(centers, y_component, ls="--", lw=1.4, label=label)
+
+    if title is None:
+        model = fit.get("model", "fit")
+        chi2_ndof = fit["chi2"] / fit["ndof"] if fit["ndof"] else np.nan
+        title = f"{model} (chi2/ndof = {chi2_ndof:.3g})"
+    ax.set_title(title)
+    ax.set_ylabel("Events / bin")
+    if logscale:
+        ax.set_yscale("log")
+        ax.set_ylim(bottom=0.5)
+    if ylims is not None:
+        ax.set_ylim(ylims)
+    ax.legend(ncol=2, fontsize=8)
+
+    ax_resid.axhline(0, color="black", lw=1)
+    ax_resid.axhline(2, color="0.55", lw=0.8, ls=":")
+    ax_resid.axhline(-2, color="0.55", lw=0.8, ls=":")
+    if show_errorbars:
+        ax_resid.errorbar(
+            centers,
+            residuals,
+            yerr=np.ones_like(residuals),
+            fmt=".",
+            color="tab:gray",
+            ms=3,
+            elinewidth=0.8,
+            capsize=0,
+        )
+    else:
+        ax_resid.plot(centers, residuals, ".", color="tab:gray", ms=3)
+    ax_resid.set_xlabel("Charge [mV ns]")
+    ax_resid.set_ylabel("Residual\n[data-fit]/sigma")
+    if residual_ylim is not None:
+        ax_resid.set_ylim(residual_ylim)
+
+    return fig, ax, ax_resid
 
 
-def fit_bellamy_spe_spectrum(
-    charge_mV_ns,
-    fit_range=None,
-    bins: int = 250,
-    max_pe: int = 8,
-    p0=None,
-    maxfev: int = 100000,
-):
-    """Fit the charge spectrum with the Bellamy et al. PMT response model.
+def print_fit_result_table(fit):
+    """Print the compact fit-result table and fit-quality diagnostics."""
+    table = fit_result_table(fit, as_dataframe=True)
+    if hasattr(table, "to_string"):
+        print(table.to_string(index=False))
+    else:
+        print(
+            f"{'parameter':<25} {'initial':>15} {'lower_bound':>15} "
+            f"{'upper_bound':>15} {'fixed':>8} {'fit_value':>15} {'fit_error':>15}"
+        )
+        print("-" * 115)
+        for row in table:
+            print(
+                f"{row['parameter']:<25} "
+                f"{row['initial']:>15.6g} "
+                f"{row['lower_bound']:>15.6g} "
+                f"{row['upper_bound']:>15.6g} "
+                f"{str(row['fixed']):>8} "
+                f"{row['fit_value']:>15.6g} "
+                f"{row['fit_error']:>15.6g}"
+            )
 
-    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
-    """
-    fit = fit_histogram_model(
-        charge_mV_ns,
-        bellamy_spe_model,
-        bellamy_spe_parameter_names(),
-        p0=p0,
-        fit_range=fit_range,
-        bins=bins,
-        model_name="bellamy_spe",
-        model_kwargs={"max_pe": max_pe},
-        maxfev=maxfev,
-    )
-    fit["max_pe"] = max_pe
-    return fit
+    chi2 = fit.get("chi2", np.nan)
+    ndof = fit.get("ndof", 0)
+    if ndof:
+        print(f"\nchi2 / ndof = {chi2:.1f} / {ndof} = {chi2 / ndof:.3f}")
+    else:
+        print(f"\nchi2 / ndof = {chi2:.1f} / {ndof}")
 
-
-def fit_free_spe_spectrum(
-    charge_mV_ns,
-    fit_range=None,
-    bins: int = 250,
-    max_pe: int = 3,
-    p0=None,
-    maxfev: int = 100000,
-):
-    """Fit a charge spectrum with free PE peak areas and asymmetric SPE widths.
-
-    ``p0`` must be ``{param_name: [initial, lower, upper, is_fixed]}``.
-    """
-    fit = fit_histogram_model(
-        charge_mV_ns,
-        free_spe_model,
-        free_spe_parameter_names(max_pe=max_pe),
-        p0=p0,
-        fit_range=fit_range,
-        bins=bins,
-        model_name="free_spe",
-        model_kwargs={"max_pe": max_pe},
-        maxfev=maxfev,
-    )
-    fit["max_pe"] = max_pe
-    return fit
+    if fit.get("diagnostics"):
+        print("\nDiagnostics:")
+        for diagnostic in fit["diagnostics"]:
+            print(f"  - {diagnostic}")
 
 
 def print_spe_fit_result(fit):
@@ -1754,54 +2048,3 @@ def print_spe_fit_result(fit):
         for name, value in fixed_parameters.items():
             print(f"  - {name} = {value:.6g}")
 
-
-def average_waveforms_by_amplitude(voltage_mV, amplitude_bins_mV):
-    amplitude_mV = -np.min(voltage_mV, axis=1)
-    results = []
-
-    for low, high in zip(amplitude_bins_mV[:-1], amplitude_bins_mV[1:]):
-        mask = (amplitude_mV >= low) & (amplitude_mV < high)
-        n_events = int(np.sum(mask))
-
-        if n_events > 0:
-            average_waveform = np.mean(voltage_mV[mask], axis=0)
-            mean_amplitude = np.mean(amplitude_mV[mask])
-            std_amplitude = np.std(amplitude_mV[mask])
-        else:
-            average_waveform = None
-            mean_amplitude = np.nan
-            std_amplitude = np.nan
-
-        results.append(
-            {
-                "bin": (low, high),
-                "n_events": n_events,
-                "mean_amplitude_mV": mean_amplitude,
-                "std_amplitude_mV": std_amplitude,
-                "average_waveform": average_waveform,
-                "mask": mask,
-            }
-        )
-
-    return results
-
-
-def plot_average_waveforms(time_ns, average_results, ax=None):
-    import matplotlib.pyplot as plt
-
-    if ax is None:
-        _, ax = plt.subplots(figsize=(8, 6))
-
-    for result in average_results:
-        wf = result["average_waveform"]
-        if wf is None:
-            continue
-
-        low, high = result["bin"]
-        ax.plot(time_ns, wf, label=f"{low}-{high} mV (N={result['n_events']})")
-
-    ax.set_xlabel("Time [ns]")
-    ax.set_ylabel("Voltage [mV]")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
-    return ax
