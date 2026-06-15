@@ -1338,8 +1338,8 @@ def bellamy_spe_parameter_names() -> list[str]:
         "sigma0_mV_ns",
         "q1_mV_ns",
         "sigma1_mV_ns",
-        "background_probability",
-        "background_slope_per_mV_ns",
+        "w",
+        "alpha",
     ]
 
 
@@ -1347,12 +1347,12 @@ def bellamy_spe_model(
     x,
     n_total,
     mu_pe,
-    pedestal,
-    sigma_ped,
-    spe_area,
-    sigma_spe,
-    background_probability,
-    background_slope,
+    q0_mV_ns,
+    sigma0_mV_ns,
+    q1_mV_ns,
+    sigma1_mV_ns,
+    w,
+    alpha,
     bin_width,
     max_pe: int = 8,
 ):
@@ -1365,15 +1365,15 @@ def bellamy_spe_model(
     """
     y = np.zeros_like(x, dtype=float)
     mu_pe = np.maximum(mu_pe, 1e-12)
-    w = np.clip(background_probability, 0.0, 1.0)
+    w = np.clip(w, 0.0, 1.0)
 
     for n_pe in range(max_pe + 1):
         log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
         weight = np.exp(log_weight)
-        mean = pedestal + n_pe * spe_area
-        sigma = np.sqrt(sigma_ped**2 + n_pe * sigma_spe**2)
-        response = (1.0 - w) * gaussian_pdf(x, mean, sigma)
-        response += w * exponential_gaussian_pdf(x, mean, sigma, background_slope)
+        qn_mV_ns = q0_mV_ns + n_pe * q1_mV_ns
+        sigman_mV_ns = np.sqrt(sigma0_mV_ns**2 + n_pe * sigma1_mV_ns**2)
+        response = (1.0 - w) * gaussian_pdf(x, qn_mV_ns, sigman_mV_ns)
+        response += w * exponential_gaussian_pdf(x, qn_mV_ns, sigman_mV_ns, alpha)
         y += n_total * bin_width * weight * response
 
     return y
@@ -1384,7 +1384,7 @@ def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
     components = {}
     p = parameters
     mu_pe = np.maximum(p["mu_pe"], 1e-12)
-    w = np.clip(p["background_probability"], 0.0, 1.0)
+    w = np.clip(p["w"], 0.0, 1.0)
 
     for n_pe in range(max_pe + 1):
         log_weight = -mu_pe + n_pe * np.log(mu_pe) - gammaln(n_pe + 1)
@@ -1392,7 +1392,7 @@ def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
         mean = p["q0_mV_ns"] + n_pe * p["q1_mV_ns"]
         sigma = np.sqrt(p["sigma0_mV_ns"] ** 2 + n_pe * p["sigma1_mV_ns"] ** 2)
         response = (1.0 - w) * gaussian_pdf(x, mean, sigma)
-        response += w * exponential_gaussian_pdf(x, mean, sigma, p["background_slope_per_mV_ns"])
+        response += w * exponential_gaussian_pdf(x, mean, sigma, p["alpha"])
         components[n_pe] = p["n_total"] * bin_width * weight * response
 
     return components
@@ -1423,6 +1423,7 @@ def fit_bellamy_spe_spectrum(
     )
     fit["max_pe"] = max_pe
     return fit
+
 
 # --------- 2 paths ---------
 

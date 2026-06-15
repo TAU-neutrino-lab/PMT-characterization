@@ -1,0 +1,22 @@
+
+# southCovered_525MHz_fewHours_trig1800uV
+DC_525MHz_fewHours_trig1800uV:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [-1, 9]
+    peak_search_window_ns: [-1, 9] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.8
+    allowed_peak_window_ns: [-1, 9] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [-6.0, 150.0]
+    fit_nbins: 250
+  
+
+
+
+
