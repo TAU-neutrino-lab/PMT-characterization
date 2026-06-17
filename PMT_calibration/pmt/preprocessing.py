@@ -6,7 +6,7 @@ import numpy as np
 
 
 def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_window=None):
-    """Subtract each waveform baseline measured in ``baseline_window_ns``."""
+    """baseline is the mean wavefrom in baseline_window_ns."""
 
     if baseline_window_ns is None:
         baseline_window_ns = baseline_window
