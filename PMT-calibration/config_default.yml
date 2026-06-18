@@ -1,40 +1,5 @@
-
-# (260611) southCovered_525MHz_fewHours_trig1800uV
-DC_525MHz_fewHours_trig1800uV:
-  general:
-    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
-    integration_window_ns: [-1, 9]
-    peak_search_window_ns: [-1, 9] # where to search for peaks
-    # peak_search_window_ns: [-1, 9] # where to search for peaks
-    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
-    # selection: define a time window, all pulses that peak outside of that window are rejected
-    # a lot of waveforms are just baseline and don't peak -> we want to keep them
-    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
-    out_of_window_peak_voltage_max_mV: -1.8
-    allowed_peak_window_ns: [-1, 9] # among the peaks found in peak_search_window_ns, which ones do we keep?
-  fit_general:
-    fit_range: [-6.0, 150.0]
-    fit_nbins: 250
-
-# (260611) southCovered_20MHz_fewHours_trig600uV
-DC_20MHz_fewHours_trig600uV:
-  general:
-    baseline_window_width_ns: 15 # baseline window starts at the beginning of widnow
-    integration_window_ns: [-1, 40]
-    peak_search_window_ns: [-1, 40] # where to search for peaks
-    # peak_search_window_ns: [-1, 9] # where to search for peaks
-    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
-    # selection: define a time window, all pulses that peak outside of that window are rejected
-    # a lot of waveforms are just baseline and don't peak -> we want to keep them
-    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
-    out_of_window_peak_voltage_max_mV: -0.6
-    allowed_peak_window_ns: [-1, 40] # among the peaks found in peak_search_window_ns, which ones do we keep?
-  fit_general:
-    fit_range: [-6.0, 150.0]
-    fit_nbins: 250
-  
-# (260609) baseline850V_BW20MHz_led*
-baseline850V_BW20MHz_led:
+# (260615) baseline850V_BW20MHz_led*
+WA0089_850V_20MHz_Cold_led0:
   general:
     baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
     integration_window_ns: [30, 80]
@@ -45,12 +10,12 @@ baseline850V_BW20MHz_led:
     # a lot of waveforms are just baseline and don't peak -> we want to keep them
     # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
     out_of_window_peak_voltage_max_mV: -1.0
-    allowed_peak_window_ns: [30, 80] # among the peaks found in peak_search_window_ns, which ones do we keep?
+    # allowed_peak_window_ns: [30, 48] # among the peaks found in peak_search_window_ns, which ones do we keep?
+    allowed_peak_window_ns: [30, 40] # tight
   fit_general:
-    fit_range: [-6.0, 100.0]
+    fit_range: [-15.0, 80.0]
     fit_nbins: 250
 
-# (260615) baseline850V_BW20MHz_led*
 WA0089_850V_20MHz_Cold_led1:
   general:
     baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
@@ -62,9 +27,136 @@ WA0089_850V_20MHz_Cold_led1:
     # a lot of waveforms are just baseline and don't peak -> we want to keep them
     # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
     out_of_window_peak_voltage_max_mV: -1.0
-    allowed_peak_window_ns: [30, 80] # among the peaks found in peak_search_window_ns, which ones do we keep?
+    # allowed_peak_window_ns: [30, 48] # among the peaks found in peak_search_window_ns, which ones do we keep?
+    allowed_peak_window_ns: [30, 40] # tight
   fit_general:
-    fit_range: [-6.0, 100.0]
+    fit_range: [-15.0, 80.0]
     fit_nbins: 250
 
+WA0089_850V_20MHz_Cold_led2:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [30, 80]
+    peak_search_window_ns: [30, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [30, 40] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [-15.0, 100.0]
+    fit_nbins: 250
 
+WA0089_850V_20MHz_Cold_led3:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [30, 80]
+    peak_search_window_ns: [30, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [30, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [-20.0, 350.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led4:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [30, 80]
+    peak_search_window_ns: [30, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [30, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [-50.0, 900.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led5:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [34, 80]
+    peak_search_window_ns: [34, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [34, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [-50., 3000.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led6:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [34, 80]
+    peak_search_window_ns: [34, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [34, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [4000.0, 10000.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led7:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [34, 85]
+    peak_search_window_ns: [34, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [34, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [21400.0, 28900.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led8:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [34, 85]
+    peak_search_window_ns: [34, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [34, 50] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [56599.0, 67200.0]
+    fit_nbins: 250
+
+WA0089_850V_20MHz_Cold_led9:
+  general:
+    baseline_window_width_ns: 20 # baseline window starts at the beginning of widnow
+    integration_window_ns: [34, 85]
+    peak_search_window_ns: [34, 80] # where to search for peaks
+    # peak_search_window_ns: [-1, 9] # where to search for peaks
+    global_peak_voltage_max_mV: None # optional global cut that removes small waveforms (peaks are negative)
+    # selection: define a time window, all pulses that peak outside of that window are rejected
+    # a lot of waveforms are just baseline and don't peak -> we want to keep them
+    # we set a minimum value to define a peak (if the waveform doesn't pass this threshold it is kept)
+    out_of_window_peak_voltage_max_mV: -1.0
+    allowed_peak_window_ns: [40, 55] # among the peaks found in peak_search_window_ns, which ones do we keep?
+  fit_general:
+    fit_range: [114481, 126610.]
+    fit_nbins: 250
