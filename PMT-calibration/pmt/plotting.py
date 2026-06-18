@@ -1,3 +1,6 @@
+
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -58,3 +61,53 @@ def plot_baseline_stability(ax, values, unit="mV", max_points=20000):
         title += f"every {step} event(s))"
     ax.set_title(title)
     ax.legend(fontsize=10)
+
+# ----------------------------------------------------------------
+# plots wrappers
+# ----------------------------------------------------------------
+
+def plot_baseline_quality(axes, time_ns, sample_baseline_mV, voltage_sample_bs_mV, baseline_window_ns):
+    axes = axes.ravel()
+    add_hist_stats(
+        axes[0],
+        sample_baseline_mV,
+        bins=80,
+        color="tab:green",
+        xlabel="Baseline estimate [mV]",
+        title="Baseline distribution before subtraction",
+        unit="mV",
+        show_stat=True,
+        text_position=(0.02, 0.98),
+        legend_loc="lower center"
+    )
+
+    check_mask = (time_ns >= baseline_window_ns[0]) & (time_ns <= baseline_window_ns[1])
+    baseline_means = [np.mean(voltage_sample_bs_mV[:, check_mask], axis=1)]
+    add_hist_stats(
+            axes[1],
+            baseline_means,
+            bins=120,
+            color="tab:blue",
+            xlabel="Mean voltage in baseline window [mV]",
+            title="Baseline removal residual",
+            unit="mV",
+        )
+
+    plot_baseline_stability(axes[2], sample_baseline_mV, unit="mV", max_points=None)
+
+
+# ----------------------------------------------------------------
+# save
+# ----------------------------------------------------------------
+def save_plot(fig, save_plots=False, save_dir="plots", file_nickname="plot", plot_name="figure", formats=("pdf",)):
+    """Save a figure when requested and return saved paths."""
+    if not save_plots:
+        return []
+    save_path = Path(save_dir)
+    save_path.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for fmt in formats:
+        path = save_path / f"{file_nickname}_{plot_name}.{fmt}"
+        fig.savefig(path, bbox_inches="tight")
+        saved.append(path)
+    return saved
