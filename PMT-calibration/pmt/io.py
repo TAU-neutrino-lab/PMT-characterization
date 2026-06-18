@@ -32,43 +32,70 @@ def find_pmt_files(
         files = files[:max_files]
     return files
 
-
 def read_waveform_sample(
-    file: str | Path,
+    files: str | Path | Sequence[str | Path],
     *,
     max_events: int | None = 1000,
     channel: str = "Channel 1",
 ):
-    """Read a sample of segmented PMT waveforms.
+    """Read a sample of segmented PMT waveforms from one or more files.
 
     Returns a dictionary with ``time_ns``, ``voltage_mV``, ``metadata``, and
-    other small-sample bookkeeping fields.
+    bookkeeping fields.
     """
 
-    available_segments, _ = read_segment_time_tags(file, channel=channel)
-    sample_segments = available_segments if max_events is None else available_segments[:max_events]
+    if isinstance(files, (str, Path)):
+        files = [files]
 
-    time_s, voltage_V, metadata = read_keysight_h5_direct(
-        file,
-        channel=channel,
-        segment_numbers=sample_segments,
-    )
-    time_ns, voltage_mV, adc_step_mV, units_time, units_voltage = standard_units(
-        time_s,
-        voltage_V,
-        metadata,
-    )
+    all_time = []
+    all_voltage = []
+    all_metadata = []
+    all_segments = []
+
+    remaining = max_events
+
+    for file in files:
+        available_segments, _ = read_segment_time_tags(file, channel=channel)
+
+        if remaining is None:
+            sample_segments = available_segments
+        else:
+            sample_segments = available_segments[:remaining]
+
+        if len(sample_segments) == 0:
+            continue
+
+        time_s, voltage_V, metadata = read_keysight_h5_direct(
+            file,
+            channel=channel,
+            segment_numbers=sample_segments,
+        )
+
+        time_ns, voltage_mV, adc_step_mV, units_time, units_voltage = standard_units(
+            time_s,
+            voltage_V,
+            metadata,
+        )
+
+        all_time.append(time_ns)
+        all_voltage.append(voltage_mV)
+        all_metadata.append(metadata)
+        all_segments.extend(sample_segments)
+
+        if remaining is not None:
+            remaining -= len(sample_segments)
+            if remaining <= 0:
+                break
 
     return {
-        "time_ns": time_ns,
-        "voltage_mV": voltage_mV,
-        "metadata": metadata,
-        "sample_segments": sample_segments,
+        "time_ns": np.concatenate(all_time, axis=0),
+        "voltage_mV": np.concatenate(all_voltage, axis=0),
+        "metadata": all_metadata,
+        "sample_segments": all_segments,
         "adc_step_mV": adc_step_mV,
         "units_time": units_time,
         "units_voltage": units_voltage,
     }
-
 
 def load_baseline_subtracted_waveforms(
     files: Sequence[str | Path],
