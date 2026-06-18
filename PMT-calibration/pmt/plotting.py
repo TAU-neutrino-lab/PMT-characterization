@@ -2,6 +2,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+# ----------------------------------------------------------------
+# generic plots
+# ----------------------------------------------------------------
 
 def add_hist_stats(ax, values, bins, color, xlabel, title, unit="", show_stat=True, text_position=(0.02, 0.98), legend_loc="best"):
     values = np.asarray(values, dtype=float)
@@ -30,3 +33,28 @@ def add_hist_stats(ax, values, bins, color, xlabel, title, unit="", show_stat=Tr
     ax.set_ylabel("Events")
     ax.set_title(title)
     ax.legend(fontsize=8, loc=legend_loc)
+
+# def add_plot()
+
+# ----------------------------------------------------------------
+# dedicated plots
+# ----------------------------------------------------------------
+
+def plot_baseline_stability(ax, values, unit="mV", max_points=20000):
+    # baseline value in each event
+    if max_points is not None:
+        step = max(1, len(values) // max_points)
+        event_index = np.arange(len(values))[::step]
+        ax.plot(event_index, values[::step], ".", ms=2, alpha=0.35, color="tab:green")
+    else:
+        event_index = np.arange(len(values))
+        ax.plot(event_index, values, ".", ms=2, alpha=0.35, color="tab:green")
+    ax.axhline(np.mean(values), color="tab:orange", ls=":", lw=1.5, label="mean")
+    ax.axhline(np.median(values), color="black", ls="--", lw=1.2, label="median")
+    ax.set_xlabel("Event index")
+    ax.set_ylabel(f"Baseline [{unit}]")
+    title = "Baseline stability vs event index"
+    if max_points is not None:
+        title += f"every {step} event(s))"
+    ax.set_title(title)
+    ax.legend(fontsize=10)
