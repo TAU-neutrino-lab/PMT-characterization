@@ -69,6 +69,99 @@ def plot_baseline_stability(ax, values, unit="mV", max_points=20000):
     ax.set_title(title)
     ax.legend(fontsize=10)
 
+def plot_snr_distribution(ax, df_sel):
+
+    ax.hist( df_sel["snr"], bins=100, log=True )
+
+    ax.set_xlabel("SNR")
+    ax.set_ylabel("Events")
+    ax.set_title("SNR distribution");
+
+def plot_mean_waveforms_vs_snr( ax,  df_sel, waveforms_sel, time_ns, cuts=(2, 5, 8, 10, 15, 20)):
+
+    for cut in cuts:
+
+        mask = df_sel["snr"] > cut
+        if mask.sum() < 10:
+            continue
+
+        mean_waveform = np.mean(
+            waveforms_sel[mask.values],
+            axis=0,
+        )
+
+        ax.plot(
+            time_ns,
+            mean_waveform,
+            label=f"SNR>{cut}",
+        )
+
+    ax.legend()
+    ax.set_xlabel("Time (ns)")
+    ax.set_ylabel("Voltage (mV)")
+    ax.set_title("Mean waveform vs SNR cut")
+
+def plot_charge_histograms_vs_snr( ax,  df_sel, cuts=(2, 5, 8, 10, 15) ):
+
+    for cut in cuts:
+
+        mask = df_sel["snr"] > cut
+
+        ax.hist(
+            df_sel.loc[ mask, "area_mV_ns" ],
+            bins=200,
+            histtype="step",
+            density=True,
+            label=f"SNR>{cut}",
+        )
+
+    ax.legend()
+    ax.set_xlabel("Charge (mV ns)")
+    ax.set_ylabel("Density")
+    ax.set_title("Charge distribution vs SNR cut")
+
+def plot_snr_efficiency( ax,  df_sel, cuts=np.arange(1, 25) ):
+
+    efficiency = []
+
+    for cut in cuts:
+        efficiency.append( np.mean( df_sel["snr"] > cut ) )
+
+    ax.plot( cuts, efficiency, marker="o" )
+
+    ax.set_xlabel("SNR cut")
+    ax.set_ylabel("Fraction kept")
+    ax.set_title("Efficiency vs SNR cut")
+    ax.grid()
+
+def plot_waveforms_in_snr_range( ax, df_sel, waveforms_sel, time_ns, snr_min=7, snr_max=9, n_waveforms=50 ):
+
+    mask = (
+        (df_sel["snr"] > snr_min)
+        &
+        (df_sel["snr"] < snr_max)
+    )
+
+    for waveform in waveforms_sel[
+        mask.values
+    ][:n_waveforms]:
+
+        ax.plot(
+            time_ns,
+            waveform,
+            alpha=0.9,
+        )
+
+    ax.set_xlabel("Time (ns)")
+    ax.set_ylabel("Voltage (mV)")
+    ax.set_title(f"{snr_min} < SNR < {snr_max}" )
+
+def plot_snr_vs_amplitude(ax, df_sel):
+
+    ax.scatter( df_sel["peak_amplitude_mV"], df_sel["snr"], s=1, alpha=0.7 )
+    ax.set_xlabel("Peak amplitude (mV)")
+    ax.set_ylabel("SNR")
+
 # ----------------------------------------------------------------
 # plots wrappers
 # ----------------------------------------------------------------

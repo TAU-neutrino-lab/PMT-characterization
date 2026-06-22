@@ -11,12 +11,15 @@ from typing import Sequence
 
 import numpy as np
 
+
 from lab_tools.io import (
     iter_keysight_chunks,
     read_keysight_h5_direct,
     read_segment_time_tags,
     standard_units,
 )
+
+from .preprocessing import *
 
 
 def find_pmt_files(
@@ -97,54 +100,155 @@ def read_waveform_sample(
         "units_voltage": units_voltage,
     }
 
-def load_baseline_subtracted_waveforms(
-    files: Sequence[str | Path],
-    baseline_window_ns,
-    subtract_baseline,
+def load_preprocessed_waveforms(
+    files,
     *,
-    channel: str = "Channel 1",
-    chunk_size: int = 512,
-) -> dict[str, np.ndarray]:
-    """Read PMT files and return baseline-subtracted waveforms.
+    channel="Channel 1",
+    chunk_size=512,
+    remove_saturation=True,
+    baseline_subtraction=True,
+    baseline_window_ns=(0.0, 20.0),
+    low_limit_mV=None,
+    high_limit_mV=None,
+    margin_mV=0.0,
+    max_saturated_samples=0,
+):
+    """
+    Load waveforms and optionally apply preprocessing.
+
+    Processing order:
+
+        raw waveforms
+            ↓
+        saturation rejection
+            ↓
+        baseline subtraction
+
+    Returns
+    -------
+    dict
+        Contains waveform arrays and event-level metadata.
     """
 
     voltage_parts = []
-    baseline_parts = []
     event_files = []
     event_segments = []
+
+    event_info_parts = {}
+
     time_ns = None
 
-    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
+    total_events = 0
+    total_kept = 0
+    total_removed = 0
+
+    for chunk in iter_keysight_chunks( files, channel=channel, chunk_size=chunk_size ):
+
         if time_ns is None:
             time_ns = chunk["time_ns"]
+
         elif len(time_ns) != len(chunk["time_ns"]):
-            raise ValueError(f"Number of samples changed in {chunk['filename']}")
+            raise ValueError(
+                f"Number of samples changed in {chunk['filename']}"
+            )
 
-        voltage_bs_mV, baseline_mV = subtract_baseline(
-            chunk["time_ns"],
-            chunk["voltage_mV"],
-            baseline_window_ns=baseline_window_ns,
-        )
+        voltage_mV = chunk["voltage_mV"]
 
-        voltage_parts.append(voltage_bs_mV)
-        baseline_parts.append(baseline_mV)
-        event_files.extend([chunk["filename"]] * len(voltage_bs_mV))
-        event_segments.extend(chunk["segment_numbers"])
+        n_events_chunk = len(voltage_mV)
+
+        # ---------- Saturation Rejection ----------
+
+        if remove_saturation:
+            voltage_mV, keep_mask, saturation_event_info, saturation_summary = (
+                remove_saturated_waveforms(
+                    voltage_mV,
+                    chunk["metadata"],
+                    low_limit_mV=low_limit_mV,
+                    high_limit_mV=high_limit_mV,
+                    margin_mV=margin_mV,
+                    max_saturated_samples=max_saturated_samples,
+                )
+            )
+
+            # accumulate statistics over all chunks
+            total_events += saturation_summary["n_total"]
+            total_kept += saturation_summary["n_kept"]
+            total_removed += saturation_summary["n_removed"]
+
+            segment_numbers = np.asarray( chunk["segment_numbers"])[keep_mask]
+            event_files_chunk = np.array( [chunk["filename"]] * n_events_chunk)[keep_mask]
+
+        else:
+            keep_mask = np.ones( n_events_chunk, dtype=bool)
+            segment_numbers = np.asarray( chunk["segment_numbers"] )
+            event_files_chunk = np.array( [chunk["filename"]] * n_events_chunk)
+            saturation_event_info = {}
+
+        # ---------- Baseline subtraction ----------
+
+        if subtract_baseline:
+
+            voltage_mV, baseline_event_info = (
+                subtract_baseline(
+                    chunk["time_ns"],
+                    voltage_mV,
+                    baseline_window_ns=baseline_window_ns,
+                )
+            )
+
+        else:
+            baseline_event_info = {}
+
+        # ---------- Merge event-level metadata ----------
+
+        chunk_event_info = {}
+        chunk_event_info.update( saturation_event_info)
+        chunk_event_info.update( baseline_event_info)
+
+        for key, values in chunk_event_info.items():
+            if key not in event_info_parts:
+                event_info_parts[key] = []
+
+            event_info_parts[key].append( np.asarray(values))
+
+        
+        # ---------- Store waveforms ----------
+
+        voltage_parts.append( voltage_mV)
+        event_files.extend( event_files_chunk)
+        event_segments.extend( segment_numbers)
 
     if time_ns is None:
-        raise ValueError("No waveforms were loaded")
+        raise ValueError( "No waveforms were loaded")
 
-    return {
-        "time_ns": time_ns,
-        "voltage_bs_mV": np.concatenate(voltage_parts, axis=0),
-        "baseline_mV": np.concatenate(baseline_parts),
-        "event_file": np.array(event_files),
-        "event_segment": np.array(event_segments),
+    # ---------- Concatenate event metadata ----------
+
+    event_info = {}
+
+    for key, values in event_info_parts.items():
+        event_info[key] = np.concatenate( values )
+
+    result = {
+        "time_ns":       time_ns,
+        "voltage_mV":    np.concatenate( voltage_parts, axis=0 ),
+        "event_file":    np.asarray( event_files ), # from which file this specific event was extracted
+        "event_segment": np.asarray( event_segments ),
+        "event_info":    event_info,
     }
+
+    if remove_saturation:
+        result["saturation_summary"] = {
+            "n_total": total_events,
+            "n_kept": total_kept,
+            "n_removed": total_removed,
+            "efficiency": ( total_kept / total_events if total_events > 0 else np.nan )
+        }
+
+    return result
 
 
 __all__ = [
     "find_pmt_files",
-    "load_baseline_subtracted_waveforms",
+    "load_preprocessed_waveforms",
     "read_waveform_sample",
 ]

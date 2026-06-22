@@ -60,26 +60,24 @@ def remove_saturated_waveforms( voltage_mV, metadata, low_limit_mV=None, high_li
     )
     keep_mask = ~saturated
     event_info = {
-        "is_saturated": saturated,
+        "is_saturated":        saturated,
         "n_saturated_samples": n_saturated_samples,
     }
     summary = {
-        "n_total": int(len(keep_mask)),
-        "n_kept": int(np.sum(keep_mask)),
-        "n_removed": int(np.sum(saturated)),
+        "n_total":    int(len(keep_mask)),
+        "n_kept":     int(np.sum(keep_mask)),
+        "n_removed":  int(np.sum(saturated)),
         "efficiency": float(np.mean(keep_mask)) if len(keep_mask) else np.nan,
     }
-    return voltage_mV[keep_mask], event_info, summary
+    return voltage_mV[keep_mask], keep_mask, event_info, summary
 
 # ----------------------------------------------------------------
 # Baseline 
 # ----------------------------------------------------------------
 
-def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_window=None):
+def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None):
     """baseline is the mean wavefrom in baseline_window_ns."""
 
-    if baseline_window_ns is None:
-        baseline_window_ns = baseline_window
     if baseline_window_ns is None:
         baseline_window_ns = (0.0, 20.0)
 
@@ -137,6 +135,9 @@ def _charge_around_time( t_ns, v_mV, center_time_ns, pre_ns, post_ns ):
         v_mV[mask],
         t_ns[mask],
     )
+
+
+
 
 
 # ----------------------------------------------------------------
@@ -220,9 +221,7 @@ def extract_waveform_features(
     t = np.asarray(time_ns)
     v = np.asarray(voltage_mV)
 
-    # ------------------------------
-    # Sanity checks
-    # ------------------------------
+    # ---------- Sanity Checks ----------
 
     if t.ndim != 1:
         raise ValueError(
@@ -457,7 +456,8 @@ def build_waveform_feature_dataframe(
 
 __all__ = ["subtract_baseline",
            "remove_saturated_waveforms", 
-           "build_waveform_feature_dataframe"]
+           "build_waveform_feature_dataframe"
+           ]
 
 
 
