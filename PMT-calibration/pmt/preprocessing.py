@@ -115,11 +115,76 @@ def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None, baseline_win
 
     return voltage_bs_mV, event_info
 
+# ----------------------------------------------------------------
+# Charge computation 
+# ----------------------------------------------------------------
+
+def _charge_around_time( t_ns, v_mV, center_time_ns, pre_ns, post_ns ):
+    """ compute the charge around a given position in them
+            center_time_ns: array of times "centers"
+            pre_ns, post_ns,
+    """
+    mask = (
+        (t_ns >= center_time_ns - pre_ns)
+        &
+        (t_ns <= center_time_ns + post_ns)
+    )
+
+    if not np.any(mask):
+        return np.nan
+
+    return np.trapezoid(
+        v_mV[mask],
+        t_ns[mask],
+    )
 
 
 # ----------------------------------------------------------------
 # Waveform analysis 
 # ----------------------------------------------------------------
+
+def _fractional_crossing_time( t, v, fraction, rising=True):
+    """
+    compute crossing time with interpolation between the bins
+    CAUTION: v must be selected according to polarity (i.e. the peak is positive)"""
+    t = np.asarray(t)
+    v = np.asarray(v)
+
+    peak_idx = np.argmax(v)
+    peak_amplitude = v[peak_idx]
+
+    threshold = fraction * peak_amplitude
+
+    if rising:
+        region_t = t[:peak_idx + 1]
+        region_v = v[:peak_idx + 1]
+
+        idx = np.where(region_v >= threshold)[0]
+
+    else:
+        region_t = t[peak_idx:]
+        region_v = v[peak_idx:]
+
+        idx = np.where(region_v <= threshold)[0]
+
+    if len(idx) == 0:
+        return np.nan
+
+    i = idx[0]
+
+    if i == 0:
+        return region_t[0]
+
+    t1 = region_t[i - 1]
+    t2 = region_t[i]
+
+    y1 = region_v[i - 1]
+    y2 = region_v[i]
+
+    if y2 == y1:
+        return t1
+
+    return t1 + ( (threshold - y1) * (t2 - t1) / (y2 - y1) )
 
 
 def extract_waveform_features(
@@ -127,7 +192,11 @@ def extract_waveform_features(
     voltage_mV,
     peak_threshold_mV=None,
     second_peak_min_height_frac=0.2,
-    polarity = "negative"
+    polarity = "negative",
+    pre_peak_ns = 20,
+    post_peak_ns = 80,
+    pre_rise_ns = 10, 
+    post_rise_ns = 80, 
 ):
     """
     Extract timing information from a single waveform.
@@ -189,39 +258,23 @@ def extract_waveform_features(
 
     # ---------- Rise time ----------
 
-    level10 = 0.10 * peak_amplitude_mV
-    level90 = 0.90 * peak_amplitude_mV
+    cfd10_rise_ns = _fractional_crossing_time( t, v, fraction=0.10, rising=True)
+    cfd90_rise_ns = _fractional_crossing_time( t, v, fraction=0.90, rising=True)
+    rise_time_ns = cfd90_rise_ns - cfd10_rise_ns
 
-    before_peak = np.arange(peak_idx + 1)
-
-    idx10 = np.where(v[before_peak] >= level10)[0]
-    idx90 = np.where(v[before_peak] >= level90)[0]
-
-    t10 = t[idx10[0]] if len(idx10) else np.nan
-    t90 = t[idx90[0]] if len(idx90) else np.nan
-
-    rise_time_ns = t90 - t10
+    cfd20_rise_ns = _fractional_crossing_time( t, v, fraction=0.20, rising=True)
+    cfd30_rise_ns = _fractional_crossing_time( t, v, fraction=0.30, rising=True)
+    cfd50_rise_ns = _fractional_crossing_time( t, v, fraction=0.50, rising=True)
 
     # ---------- Fall time ----------
 
-    after_peak = np.arange(peak_idx, len(v))
+    cfd10_fall_ns = _fractional_crossing_time( t, v, fraction=0.10, rising=False)
+    cfd90_fall_ns = _fractional_crossing_time( t, v, fraction=0.90, rising=False)
+    fall_time_ns = cfd10_fall_ns - cfd90_fall_ns
 
-    idx90_fall = np.where(v[after_peak] <= level90)[0]
-    idx10_fall = np.where(v[after_peak] <= level10)[0]
-
-    t90_fall = (
-        t[after_peak[idx90_fall[0]]]
-        if len(idx90_fall)
-        else np.nan
-    )
-
-    t10_fall = (
-        t[after_peak[idx10_fall[0]]]
-        if len(idx10_fall)
-        else np.nan
-    )
-
-    fall_time_ns = t10_fall - t90_fall
+    cfd20_fall_ns = _fractional_crossing_time( t, v, fraction=0.20, rising=False)
+    cfd30_fall_ns = _fractional_crossing_time( t, v, fraction=0.30, rising=False)
+    cfd50_fall_ns = _fractional_crossing_time( t, v, fraction=0.50, rising=False)
 
     # ---------- FWHM ----------
 
@@ -250,9 +303,15 @@ def extract_waveform_features(
     except Exception:
         peak_width_ns = np.nan
     
-    # ---------- Integral ----------
+    # ---------- Charge ----------
 
     area_mV_ns = np.trapezoid(v, t)
+    # pre_ns, post_ns = 10, 80
+    charge_peak_window_mV_ns  = _charge_around_time( t, v, peak_time_ns,  pre_peak_ns, post_peak_ns )
+    charge_cfd10_window_mV_ns = _charge_around_time( t, v, cfd10_rise_ns, pre_rise_ns, post_rise_ns )
+    charge_cfd20_window_mV_ns = _charge_around_time( t, v, cfd20_rise_ns, pre_rise_ns, post_rise_ns )
+    charge_cfd30_window_mV_ns = _charge_around_time( t, v, cfd30_rise_ns, pre_rise_ns, post_rise_ns )
+    charge_cfd50_window_mV_ns = _charge_around_time( t, v, cfd50_rise_ns, pre_rise_ns, post_rise_ns )
 
     # ---------- Peak finding ----------
 
@@ -283,19 +342,38 @@ def extract_waveform_features(
         )
 
     return {
+        # main peak
         "peak_time_ns": float(peak_time_ns),
         "peak_idx": int(peak_idx),
         "peak_amplitude_mV": float(peak_amplitude_mV),
-        "t10_rise_ns": float(t10), 
-        "t90_rise_ns": float(t90),
-        "rise_time_10_90_ns": float(rise_time_ns),
-        "t10__fall_ns": float(t10_fall),
-        "t90__fall_ns": float(t90_fall),
-        "fall_time_90_10_ns": float(fall_time_ns),
+        # get the width at 50% or using scipy (supposedly better)
         "fwhm_ns": float(fwhm_ns),
-
         "peak_width_ns": float(peak_width_ns),
-        "area_mV_ns": float(area_mV_ns),
+        # rise and fall times
+        "rise_time_10_90_ns": float(rise_time_ns),
+        "fall_time_90_10_ns": float(fall_time_ns),
+        # crossing times at different fractions of the amplitude
+        "cfd10_rise_ns": float(cfd10_rise_ns), 
+        "cfd20_rise_ns": float(cfd20_rise_ns), 
+        "cfd30_rise_ns": float(cfd30_rise_ns), 
+        "cfd50_rise_ns": float(cfd50_rise_ns), 
+        "cfd90_rise_ns": float(cfd90_rise_ns),
+
+        "cfd10_fall_ns": float(cfd10_fall_ns),
+        "cfd20_fall_ns": float(cfd20_fall_ns),
+        "cfd30_fall_ns": float(cfd30_fall_ns),
+        "cfd50_fall_ns": float(cfd50_fall_ns),
+        "cfd90_fall_ns": float(cfd90_fall_ns),
+
+        # charge computation
+        "area_mV_ns": float(area_mV_ns), # integral on the full time  window
+        "charge_peak_window_mV_ns": float(charge_peak_window_mV_ns),  # window around the peak
+        "charge_cfd10_window_mV_ns": float(charge_cfd10_window_mV_ns),  # window around the rise crossing time
+        "charge_cfd20_window_mV_ns": float(charge_cfd20_window_mV_ns),  # window around the rise crossing time
+        "charge_cfd30_window_mV_ns": float(charge_cfd30_window_mV_ns),  # window around the rise crossing time
+        "charge_cfd50_window_mV_ns": float(charge_cfd50_window_mV_ns),  # window around the rise crossing time
+        
+        # number of detected peaks 
         "n_peaks": int(len(peaks)),
 
         "second_peak_time_ns": float(second_peak_time_ns),
@@ -310,6 +388,10 @@ def build_waveform_feature_dataframe(
     waveforms_mV,
     peak_threshold_mV=None,
     second_peak_min_height_frac=0.2,
+    pre_peak_ns = 20,
+    post_peak_ns = 80,
+    pre_rise_ns = 10, 
+    post_rise_ns = 80, 
     extra=None # extra dictionary to be added to the dataframe
 ):
     """
@@ -340,7 +422,11 @@ def build_waveform_feature_dataframe(
             time_ns=time_ns,
             voltage_mV=waveform,
             peak_threshold_mV=peak_threshold_mV,
-            second_peak_min_height_frac=second_peak_min_height_frac
+            second_peak_min_height_frac=second_peak_min_height_frac,
+            pre_peak_ns = pre_peak_ns,
+            post_peak_ns = post_peak_ns,
+            pre_rise_ns = pre_rise_ns, 
+            post_rise_ns = post_rise_ns
         )
 
         info["event_id"] = event_id
