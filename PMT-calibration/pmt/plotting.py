@@ -37,6 +37,13 @@ def add_hist_stats(ax, values, bins, color, xlabel, title, unit="", show_stat=Tr
     ax.set_title(title)
     ax.legend(fontsize=8, loc=legend_loc)
 
+def add_plot_waveforms(ax, time, selected_waveforms, title=""):
+    for waveform in selected_waveforms:
+        ax.plot(time, waveform, alpha=0.50)
+    ax.set_xlabel("Time (ns)")
+    ax.set_ylabel("Voltage (mV)")
+    ax.set_title(title);
+
 # def add_plot()
 
 # ----------------------------------------------------------------
@@ -99,7 +106,7 @@ def plot_baseline_quality(axes, time_ns, sample_baseline_mV, voltage_sample_bs_m
 # ----------------------------------------------------------------
 # save
 # ----------------------------------------------------------------
-def save_plot(fig, save_plots=False, save_dir="plots", file_nickname="plot", plot_name="figure", formats=("pdf",)):
+def save_plot(fig, save_plots=False, save_dir="plots", file_nickname="plot", plot_name="figure", Nevents = None, formats=("pdf",)):
     """Save a figure when requested and return saved paths."""
     if not save_plots:
         return []
@@ -107,7 +114,7 @@ def save_plot(fig, save_plots=False, save_dir="plots", file_nickname="plot", plo
     save_path.mkdir(parents=True, exist_ok=True)
     saved = []
     for fmt in formats:
-        path = save_path / f"{file_nickname}_{plot_name}.{fmt}"
+        path = save_path / f"{file_nickname}_{plot_name}.{fmt}" if Nevents is None else save_path / f"{file_nickname}_{plot_name}_{Nevents}evts.{fmt}"
         fig.savefig(path, bbox_inches="tight")
         saved.append(path)
     return saved
