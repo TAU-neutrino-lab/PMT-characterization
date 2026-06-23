@@ -1,8 +1,8 @@
+import matplotlib.pyplot as plt
 from dataclasses import dataclass, field
 from typing import Callable
 import numpy as np
 import pandas as pd
-
 from scipy.optimize import curve_fit
 
 
@@ -241,6 +241,7 @@ def plot_fit_result(
     logscale=True,
     ylims=None,
     residual_ylim=(-8, 8),
+    component_visibility_fraction=1e-3,
 ):
     """Plot histogram data, total fit, model components, and residuals.
 
@@ -256,7 +257,6 @@ def plot_fit_result(
         Extra keyword arguments passed to ``component_function``. By default,
         ``max_pe`` is taken from the fit dictionary when available.
     """
-    import matplotlib.pyplot as plt
 
     if ax is None or ax_resid is None:
         fig, (ax, ax_resid) = plt.subplots(
@@ -291,23 +291,87 @@ def plot_fit_result(
 
     ax.plot(centers, model_counts, color="tab:red", lw=2.2, label="total fit")
 
+    #
+    # Components
+    #
+
     if show_components:
+
         if component_function is None:
             component_function = fit["model"].components
+
         if component_function is not None:
+
             if component_kwargs is None:
                 component_kwargs = {}
-            if "max_pe" not in component_kwargs and "max_pe" in fit:
-                component_kwargs = {**component_kwargs, "max_pe": fit["max_pe"]}
+
+            if component_kwargs is None:
+                component_kwargs = {}
+
+            component_kwargs = {
+                **fit.get("model_kwargs", {}),
+                **component_kwargs,
+            }
+
             components = component_function(
                 centers,
                 fit["parameters"],
                 fit["bin_width"],
                 **component_kwargs,
             )
-            for key, y_component in components.items():
-                label = f"{key} PE" if isinstance(key, (int, np.integer)) else str(key)
-                ax.plot(centers, y_component, ls="--", lw=1.4, label=label)
+
+            #
+            # Sort components
+            #
+
+            try:
+                component_items = sorted(
+                    components.items(),
+                    key=lambda kv: kv[0],
+                )
+            except Exception:
+                component_items = list(
+                    components.items()
+                )
+
+            #
+            # Skip tiny components
+            #
+
+            total_area = np.sum(
+                model_counts
+            )
+
+            component_visibility_threshold = ( component_visibility_fraction * total_area )
+
+            for key, y_component in component_items:
+
+                component_area = np.sum(
+                    y_component
+                )
+
+                if (
+                    component_area
+                    < component_visibility_threshold
+                ):
+                    continue
+
+                if isinstance(
+                    key,
+                    (int, np.integer),
+                ):
+                    label = f"{key} PE"
+                else:
+                    label = str(key)
+
+                ax.plot(
+                    centers,
+                    y_component,
+                    ls="--",
+                    lw=1.4,
+                    alpha=0.8,
+                    label=label,
+                )
 
     ax.set_title(title)
     ax.set_ylabel("Events / bin")
@@ -316,10 +380,10 @@ def plot_fit_result(
         ax.set_ylim(bottom=0.5)
     if ylims is not None:
         ax.set_ylim(ylims)
-        #
+
+    #
     # Fit summary box
     #
-
     parameters = fit["parameters"]
     errors = fit["errors"]
 
