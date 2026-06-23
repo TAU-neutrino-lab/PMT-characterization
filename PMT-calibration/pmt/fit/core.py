@@ -39,15 +39,7 @@ class FitModel:
     )
 
 
-def fit_histogram_model(
-    charge_mV_ns,
-    model: FitModel,
-    p0,
-    fit_range=None,
-    bins=250,
-    model_kwargs=None,
-    maxfev=100000
-):
+def fit_histogram_model( charge_mV_ns, model: FitModel, p0, fit_range=None, bins=250, model_kwargs=None, maxfev=100000):
 
     charge_mV_ns = np.asarray(charge_mV_ns, dtype=float)
     charge_mV_ns = charge_mV_ns[np.isfinite(charge_mV_ns)]
@@ -510,3 +502,37 @@ def fit_result_table(fit, as_dataframe=True):
         return pd.DataFrame(rows)
     return rows
 
+
+def print_npe_fractions( fractions, n_total=None ):
+    """
+    Pretty-print PE fractions.
+
+    Parameters
+    ----------
+    fractions : dict
+        {n_pe: fraction}
+
+    n_total : float or None
+        If provided, also print the expected number of events.
+    """
+
+    print("Photoelectron fractions")
+    print("-" * 40)
+
+    for n_pe in sorted(fractions):
+
+        frac = fractions[n_pe]
+
+        if n_total is None:
+
+            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%" )
+
+        else:
+
+            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%   " f"({n_total*frac:10.1f} events)" )
+
+    print("-" * 40)
+
+    print(
+        f"sum = {100*sum(fractions.values()):.3f}%"
+    )

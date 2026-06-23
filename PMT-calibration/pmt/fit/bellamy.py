@@ -81,6 +81,17 @@ def bellamy_spe_components(x, parameters, bin_width, max_pe: int = 8):
 
     return components
 
+def bellamy_npe_fractions( fit, max_pe=10 ):
+    # same as Poisson model
+    p = fit["parameters"]
+    mu = p["mu_pe"]
+    fractions = {}
+    for n in range(max_pe + 1):
+
+        fractions[n] = np.exp( -mu + n*np.log(mu) - gammaln(n+1) )
+
+    return fractions
+
 BELLAMY_SPE = FitModel(
     name="bellamy_spe",
 

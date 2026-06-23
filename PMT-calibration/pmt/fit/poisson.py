@@ -54,13 +54,7 @@ def poisson_spe_model(
         y += n_total * bin_width * weight * gaussian_pdf(x, mean, sigma)
     return y
 
-
-def poisson_spe_components(
-    x,
-    parameters,
-    bin_width,
-    max_pe: int = 8,
-):
+def poisson_spe_components( x, parameters, bin_width, max_pe: int = 8 ):
     """Return the individual n-photoelectron Gaussian components."""
     components = {}
     p = parameters
@@ -74,6 +68,16 @@ def poisson_spe_components(
         components[n_pe] = p["n_total"] * bin_width * weight * gaussian_pdf(x, mean, sigma)
 
     return components
+
+def poisson_npe_fractions( fit, max_pe=10 ):
+    p = fit["parameters"]
+    mu = p["mu_pe"]
+    fractions = {}
+    for n in range(max_pe + 1):
+
+        fractions[n] = np.exp( -mu + n*np.log(mu) - gammaln(n+1) )
+
+    return fractions
 
 POISSON_SPE = FitModel(
     name="poisson_spe",
