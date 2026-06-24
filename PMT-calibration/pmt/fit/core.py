@@ -251,13 +251,7 @@ def plot_fit_result(
     """
 
     if ax is None or ax_resid is None:
-        fig, (ax, ax_resid) = plt.subplots(
-            2,
-            1,
-            figsize=(9, 7),
-            sharex=True,
-            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
-        )
+        fig, (ax, ax_resid) = plt.subplots( 2, 1, figsize=(9, 7), sharex=True, gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05})
     else:
         fig = ax.figure
 
@@ -268,15 +262,9 @@ def plot_fit_result(
     residuals = (counts - model_counts) / counts_unc
 
     if show_errorbars:
-        ax.errorbar(
-            centers,
-            counts,
-            yerr=counts_unc,
-            fmt=".",
-            ms=3,
-            color="black",
-            alpha=0.75,
-            label="data",
+        ax.errorbar( centers, counts, yerr=counts_unc,
+                     fmt=".", ms=3, color="black", alpha=0.75,
+                     label="data",
         )
     else:
         ax.plot(centers, counts, ".", ms=3, color="black", alpha=0.75, label="data")
@@ -305,65 +293,38 @@ def plot_fit_result(
                 **component_kwargs,
             }
 
-            components = component_function(
-                centers,
-                fit["parameters"],
-                fit["bin_width"],
-                **component_kwargs,
-            )
+            components = component_function( centers, fit["parameters"], fit["bin_width"], **component_kwargs )
 
             #
             # Sort components
             #
 
             try:
-                component_items = sorted(
-                    components.items(),
-                    key=lambda kv: kv[0],
-                )
+                component_items = sorted( components.items(), key=lambda kv: kv[0] )
             except Exception:
-                component_items = list(
-                    components.items()
-                )
+                component_items = list( components.items() )
 
             #
             # Skip tiny components
             #
 
-            total_area = np.sum(
-                model_counts
-            )
+            total_area = np.sum( model_counts )
 
             component_visibility_threshold = ( component_visibility_fraction * total_area )
 
             for key, y_component in component_items:
 
-                component_area = np.sum(
-                    y_component
-                )
+                component_area = np.sum( y_component )
 
-                if (
-                    component_area
-                    < component_visibility_threshold
-                ):
+                if ( component_area < component_visibility_threshold ):
                     continue
 
-                if isinstance(
-                    key,
-                    (int, np.integer),
-                ):
+                if isinstance( key, (int, np.integer) ):
                     label = f"{key} PE"
                 else:
                     label = str(key)
 
-                ax.plot(
-                    centers,
-                    y_component,
-                    ls="--",
-                    lw=1.4,
-                    alpha=0.8,
-                    label=label,
-                )
+                ax.plot( centers, y_component, ls="--", lw=1.4, alpha=0.8, label=label )
 
     ax.set_title(title)
     ax.set_ylabel("Events / bin")
@@ -385,50 +346,36 @@ def plot_fit_result(
         else np.nan
     )
 
-    summary_lines = [
-        rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$"
-    ]
+    summary_lines = [ rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$" ]
 
-    if "mu_pe" in parameters:
-        summary_lines.append(
-            rf"$\mu_{{PE}} = {parameters['mu_pe']:.3g}"
-            rf" \pm {errors['mu_pe']:.2g}$"
-        )
+    pretty_parameter_names = {
+        "n_total": r"N_{tot}",
+        "mu_pe": r"\mu_{PE}",
+        "q0_mV_ns": r"Q_0",
+        "sigma0_mV_ns": r"\sigma_0",
+        "q1_mV_ns": r"Q_1",
+        "sigma1_mV_ns": r"\sigma_1",
+        "alpha": r"\alpha",
+    }
 
-    if "q1_mV_ns" in parameters:
-        summary_lines.append(
-            rf"$Q_1 = {parameters['q1_mV_ns']:.3g}"
-            rf" \pm {errors['q1_mV_ns']:.2g}$"
-        )
-
-    if "sigma1_mV_ns" in parameters:
-        summary_lines.append(
-            rf"$\sigma_1 = {parameters['sigma1_mV_ns']:.3g}"
-            rf" \pm {errors['sigma1_mV_ns']:.2g}$"
-        )
-
-    if "q0_mV_ns" in parameters:
-        summary_lines.append(
-            rf"$Q_0 = {parameters['q0_mV_ns']:.3g}"
-            rf" \pm {errors['q0_mV_ns']:.2g}$"
-        )
-
-    if "sigma0_mV_ns" in parameters:
-        summary_lines.append(
-            rf"$\sigma_0 = {parameters['sigma0_mV_ns']:.3g}"
-            rf" \pm {errors['sigma0_mV_ns']:.2g}$"
-        )
+    already_shown = set()
+    for par, latex_name in pretty_parameter_names.items():
+        if par in parameters:
+            # summary_lines.append( rf"${latex_name} = " rf"{parameters[par]:.3g}" rf" \pm {errors[par]:.2g}$")
+            summary_lines.append( rf"${latex_name} = " rf"{parameters[par]:.3f}" rf" \pm {errors[par]:.2f}$")
+            already_shown.add(par)
+    
+    for par in fit["parameter_names"]:
+        if par in already_shown:
+            continue
+        if par not in parameters:
+            continue
+        # summary_lines.append( f"{par} = " f"{parameters[par]:.3g}" f" ± {errors[par]:.2g}" )
+        summary_lines.append( f"{par} = " f"{parameters[par]:.3f}" f" ± {errors[par]:.2f}" )
 
     summary_text = "\n".join(summary_lines)
 
-    ax.text(
-        0.98,
-        0.98,
-        summary_text,
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=9,
+    ax.text( 0.98, 0.98, summary_text, transform=ax.transAxes, ha="right", va="top", fontsize=9,
         bbox=dict(
             boxstyle="round",
             facecolor="white",
@@ -441,16 +388,8 @@ def plot_fit_result(
     ax_resid.axhline(2, color="0.55", lw=0.8, ls=":")
     ax_resid.axhline(-2, color="0.55", lw=0.8, ls=":")
     if show_errorbars:
-        ax_resid.errorbar(
-            centers,
-            residuals,
-            yerr=np.ones_like(residuals),
-            fmt=".",
-            color="tab:gray",
-            ms=3,
-            elinewidth=0.8,
-            capsize=0,
-        )
+        ax_resid.errorbar( centers, residuals, yerr=np.ones_like(residuals),
+                           fmt=".", color="tab:gray", ms=3, elinewidth=0.8, capsize=0 )
     else:
         ax_resid.plot(centers, residuals, ".", color="tab:gray", ms=3)
     ax_resid.set_xlabel("Charge [mV ns]")

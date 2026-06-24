@@ -94,16 +94,19 @@ def bellamy_npe_fractions( fit, max_pe=10 ):
 
 BELLAMY_SPE = FitModel(
     name="bellamy_spe",
+    # paper: distinuguish 2 types of noise
+    # 1. low charge process present in each event (leakage current, etc.) contributing to the pedestal → Gaussian
+    # 2. discrete processes which can, with nonzero probability, accompany the measured signal (thermoemission, noise initiated by the measured light, etc.) → Exponential
 
     parameter_names=(
         "n_total",
         "mu_pe",
         "q0_mV_ns",
-        "sigma0_mV_ns",
+        "sigma0_mV_ns", # std of the type 1 bkg distribution
         "q1_mV_ns",
         "sigma1_mV_ns",
-        "w",
-        "alpha"
+        "w", # probability that a measured signal is accompanied by a type-2 bkg process ()
+        "alpha" # coeff. of the exponential decay of type 2-background (positive)
     ),
 
     model = bellamy_spe_model,
