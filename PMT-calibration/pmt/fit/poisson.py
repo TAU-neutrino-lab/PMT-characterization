@@ -92,8 +92,8 @@ POISSON_SPE = FitModel(
     ),
 
     model = poisson_spe_model,
-
     components = poisson_spe_components,
+    fractions=poisson_npe_fractions,
 
     default_kwargs={
         "max_pe": 8,

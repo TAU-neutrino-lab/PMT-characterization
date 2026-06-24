@@ -21,6 +21,7 @@ class FitModel:
     components: Callable | None = None
     default_kwargs: dict = field( default_factory=dict )
     pretty_parameter_names: dict = field(default_factory=dict)
+    fractions: Callable | None = None
 
     def pretty_name(self, parameter_name: str) -> str:
         return self.pretty_parameter_names.get(parameter_name, parameter_name)
@@ -208,6 +209,187 @@ def parse_fit_parameter_specs(p0, parameter_names):
         ),
     }
 
+
+# -------------------------------------
+#             Fit Functions
+# -------------------------------------
+
+# -------------------------------------
+#             Helpers
+# -------------------------------------
+
+def binning_diagnostics( values, bins, fit_range=None, verbose=True ):
+    """
+    Inspect histogram binning quality.
+    """
+
+    values = np.asarray(values)
+    values = values[np.isfinite(values)]
+
+    if fit_range is None:
+        fit_range = ( np.min(values), np.max(values) )
+
+    counts, edges = np.histogram(
+        values,
+        bins=bins,
+        range=fit_range,
+    )
+
+    info = {
+        "n_entries": len(values),
+        "n_bins": bins,
+        "bin_width": edges[1] - edges[0],
+        "min_count": int(np.min(counts)),
+        "max_count": int(np.max(counts)),
+        "mean_count": float(np.mean(counts)),
+        "median_count": float(np.median(counts)),
+        "n_empty_bins": int(np.sum(counts == 0)),
+        "fraction_empty_bins": float( np.mean(counts == 0) ),
+        "n_bins_lt_5": int( np.sum(counts < 5) ),
+        "fraction_bins_lt_5": float( np.mean(counts < 5) ),
+    }
+
+    if verbose:
+        print("Binning diagnostics")
+        print("-" * 40)
+        print( f"Entries              : {info['n_entries']}" )
+        print( f"Bins                 : {info['n_bins']}" )
+        print( f"Bin width            : {info['bin_width']:.4g}" )
+        print( f"Min count/bin        : {info['min_count']}" )
+        print( f"Max count/bin        : {info['max_count']}" )
+        print( f"Mean count/bin       : {info['mean_count']:.2f}" )
+        print( f"Median count/bin     : {info['median_count']:.2f}" )
+        print( f"Empty bins           : " f"{info['n_empty_bins']} " f"({100*info['fraction_empty_bins']:.1f}%)" )
+        print( f"Bins with <5 counts  : " f"{info['n_bins_lt_5']} " f"({100*info['fraction_bins_lt_5']:.1f}%)" )
+
+    return info
+
+def scan_binning( values, bins_list, fit_range=None  ):
+
+    rows = []
+    for bins in bins_list:
+        info = binning_diagnostics( values, bins=bins, fit_range=fit_range, verbose=False )
+        rows.append(info)
+
+    print( f"{'Bins':>6}" f"{'Width':>10}" f"{'Mean':>10}" f"{'Median':>10}" f"{'Empty%':>10}" f"{'<5%':>10}" f"{'Min':>8}" f"{'Max':>8}" )
+    print("-" * 72)
+    for row in rows:
+        print( f"{row['n_bins']:6d}" f"{row['bin_width']:10.3g}" f"{row['mean_count']:10.1f}" f"{row['median_count']:10.1f}" f"{100*row['fraction_empty_bins']:10.1f}" f"{100*row['fraction_bins_lt_5']:10.1f}" f"{row['min_count']:8d}" f"{row['max_count']:8d}" )
+
+    return rows
+
+def fit_result_table(fit, as_dataframe=True):
+    """Summarize initial values, bounds, fixed flags, values, and errors.
+    """
+    parameter_names = fit.get("parameter_names")
+    if parameter_names is None:
+        parameter_names = list(fit.get("parameters", {}).keys())
+
+    initial = fit.get("initial_parameters", {})
+    bounds = fit.get("bounds", {})
+    lower = bounds.get("lower", {})
+    upper = bounds.get("upper", {})
+    fixed_parameters = fit.get("fixed_parameters", {})
+    parameters = fit.get("parameters", {})
+    errors = fit.get("errors", {})
+
+    rows = []
+    model = fit["model"]
+    for name in parameter_names:
+        rows.append(
+            {
+                "parameter_latex": model.pretty_name(name),
+                "parameter": name,
+                "initial": initial.get(name, np.nan),
+                "lower_bound": lower.get(name, np.nan),
+                "upper_bound": upper.get(name, np.nan),
+                "fixed": name in fixed_parameters,
+                "fit_value": parameters.get(name, np.nan),
+                "fit_error": errors.get(name, np.nan),
+            }
+        )
+
+    if as_dataframe:
+        return pd.DataFrame(rows)
+    return rows
+
+# -------------------------------------
+#             Display
+# -------------------------------------
+
+def print_fit_result_table(fit):
+
+    table = fit_result_table( fit, as_dataframe=False )
+
+    def fmt(x):
+        if np.isnan(x):
+            return "nan"
+        return f"{x:.4f}"
+
+    print( f"{'Parameter':<15}" f"{'Initial':>12}" f"{'Fit':>12}" f"{'Error':>12}" f"{'Bounds':>22}" f"{'Fixed':>8}" )
+    print("-" * 81)
+
+    for row in table:
+        bounds = ( f"[{row['lower_bound']:.1f}, " f"{row['upper_bound']:.1f}]" )
+        print( f"{row['parameter']:<15}" f"{fmt(row['initial']):>12}" f"{fmt(row['fit_value']):>12}" f"{fmt(row['fit_error']):>13}" f"{bounds:>23}" f"{str(row['fixed']):>8}" )
+
+def print_npe_fractions( fractions, n_total=None ):
+    """
+    Pretty-print PE fractions.
+
+    Parameters
+    ----------
+    fractions : dict
+        {n_pe: fraction}
+
+    n_total : float or None
+        If provided, also print the expected number of events.
+    """
+
+    print("Photoelectron fractions")
+    print("-" * 40)
+
+    for n_pe in sorted(fractions):
+
+        frac = fractions[n_pe]
+
+        if n_total is None:
+
+            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%" )
+
+        else:
+
+            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%   " f"({n_total*frac:10.1f} events)" )
+
+    print("-" * 40)
+
+    print( f"sum = {100*sum(fractions.values()):.3f}%" )
+
+# -------------------------------------
+#             Plots
+# -------------------------------------
+
+def plot_correlation_matrix(fig, ax, fit, shrink_colorbar=0.8):
+
+    cov = fit["covariance"]
+    names = fit["fitted_parameter_names"]
+    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
+    labels = [ rf"${fit['model'].pretty_name(name)}$" for name in names]
+
+    im = ax.imshow( corr, vmin=-1, vmax=1, cmap="coolwarm" )
+    ax.set_aspect("equal")
+    ax.set_xticks( np.arange(len(names)) )
+    ax.set_yticks( np.arange(len(names)) )
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticklabels(labels)
+
+    for i in range(len(names)):
+        for j in range(len(names)):
+            ax.text( j, i, f"{corr[i,j]:.2f}", ha="center", va="center", fontsize=8 )
+
+    fig.colorbar( im,ax=ax,label="Correlation coefficient", shrink=shrink_colorbar )
+    ax.set_title( fit["model_name"] )
+
 def plot_fit_result(
     fit,
     title="",
@@ -221,6 +403,8 @@ def plot_fit_result(
     ylims=None,
     residual_ylim=(-8, 8),
     component_visibility_fraction=1e-3,
+    show_event_fractions=False,
+    max_fraction_pe=100
 ):
     """Plot histogram data, total fit, model components, and residuals.
 
@@ -258,60 +442,38 @@ def plot_fit_result(
 
     ax.plot(centers, model_counts, color="tab:red", lw=2.2, label="total fit")
 
-    #
-    # Components
-    #
-
+    # --------- Components ---------
     if show_components:
-
-        if component_function is None:
-            component_function = fit["model"].components
+        component_function = ( component_function or fit["model"].components )
 
         if component_function is not None:
-
-            if component_kwargs is None:
-                component_kwargs = {}
-
-            if component_kwargs is None:
-                component_kwargs = {}
-
-            component_kwargs = {
-                **fit.get("model_kwargs", {}),
-                **component_kwargs,
-            }
-
+            component_kwargs = { **fit.get("model_kwargs", {}), **(component_kwargs or {}) }
             components = component_function( centers, fit["parameters"], fit["bin_width"], **component_kwargs )
-
-            #
-            # Sort components
-            #
-
             try:
                 component_items = sorted( components.items(), key=lambda kv: kv[0] )
             except Exception:
                 component_items = list( components.items() )
 
-            #
-            # Skip tiny components
-            #
-
+            # Skip tiny components (optional)
             total_area = np.sum( model_counts )
-
             component_visibility_threshold = ( component_visibility_fraction * total_area )
-
             for key, y_component in component_items:
-
                 component_area = np.sum( y_component )
-
                 if ( component_area < component_visibility_threshold ):
                     continue
-
                 if isinstance( key, (int, np.integer) ):
                     label = f"{key} PE"
                 else:
                     label = str(key)
 
-                ax.plot( centers, y_component, ls="--", lw=1.4, alpha=0.8, label=label )
+                y_plot = np.asarray( y_component, dtype=float ).copy()
+                if logscale: 
+                    threshold = 1e-6 * np.nanmax(y_plot)
+                    y_plot[y_plot < threshold] = np.nan
+                
+                ax.plot( centers, y_plot, ls="--", lw=1.4, alpha=0.8, label=label )
+
+                # ax.plot( centers, y_component, ls="--", lw=1.4, alpha=0.8, label=label )
 
     ax.set_title(title)
     ax.set_ylabel("Events / bin")
@@ -321,71 +483,60 @@ def plot_fit_result(
     if ylims is not None:
         ax.set_ylim(ylims)
 
-    #
-    # Fit summary box
-    #
-        #
-    # Fit summary box
-    #
-
+    # --------- Fit summary box ---------
     parameters = fit["parameters"]
     errors = fit["errors"]
-
-    chi2_ndof = (
-        fit["chi2"] / fit["ndof"]
-        if fit["ndof"] > 0
-        else np.nan
-    )
-
-    summary_lines = [
-        rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$"
-    ]
-
+    chi2_ndof = ( fit["chi2"] / fit["ndof"] if fit["ndof"] > 0 else np.nan )
+    summary_lines = [ rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$" ]
     model = fit["model"]
 
     for par in fit["parameter_names"]:
-
         if par not in parameters:
             continue
 
         pretty_name = model.pretty_name(par)
-
         value = parameters[par]
         error = errors[par]
 
         if par in fit["fixed_parameters"]:
-
-            summary_lines.append(
-                rf"${pretty_name} = {value:.3f}$ (fixed)"
-            )
-
+            summary_lines.append( rf"${pretty_name} = {value:.3f}$ (fixed)" )
         else:
-
-            summary_lines.append(
-                rf"${pretty_name} = "
-                rf"{value:.3f}"
-                rf" \pm {error:.2f}$"
-            )
+            summary_lines.append( rf"${pretty_name} = " rf"{value:.3f}" rf" \pm {error:.2f}$" )
 
     summary_text = "\n".join(summary_lines)
 
-    ax.text(
-        0.98,
-        0.98,
-        summary_text,
-        transform=ax.transAxes,
-        ha="right",
-        va="top",
-        fontsize=9,
-        bbox=dict(
-            boxstyle="round",
-            facecolor="white",
-            alpha=0.85,
-        ),
-    )
-   
-    ax.legend(ncol=2, fontsize=8)
+    ax.text( 0.98, 0.98, summary_text, transform=ax.transAxes, ha="right", va="top", fontsize=9,
+            bbox=dict( boxstyle="round", facecolor="white", alpha=0.85 ) )
+    
+        # --------- Event fractions ---------
 
+    if ( show_event_fractions and fit["model"].fractions is not None ):
+        fractions = fit["model"].fractions( fit, max_pe=max_fraction_pe )
+        fraction_lines = [ "PE fractions" ]
+
+        for n_pe, frac in fractions.items():
+            fraction_lines.append( f"{n_pe} PE : {100*frac:.2f}%" )
+
+        fraction_text = "\n".join( fraction_lines )
+
+        ax.text(
+            0.02,
+            0.98,
+            fraction_text,
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=9,
+            family="monospace",
+            bbox=dict(
+                boxstyle="round",
+                facecolor="white",
+                alpha=0.85,
+            ),
+        )
+
+
+    ax.legend(ncol=2, fontsize=8)
     ax_resid.axhline(0, color="black", lw=1)
     ax_resid.axhline(2, color="0.55", lw=0.8, ls=":")
     ax_resid.axhline(-2, color="0.55", lw=0.8, ls=":")
@@ -399,109 +550,23 @@ def plot_fit_result(
     if residual_ylim is not None:
         ax_resid.set_ylim(residual_ylim)
 
+    ax.tick_params( axis="x", which="both", labelbottom=False )
+
     return fig, ax, ax_resid
 
-def fit_result_table(fit, as_dataframe=True):
-    """Summarize initial values, bounds, fixed flags, values, and errors.
+def plot_fit_summary( fit, title="", figsize=(20, 8), shrink_colorbar=0.5, **plot_fit_kwargs):
     """
-    parameter_names = fit.get("parameter_names")
-    if parameter_names is None:
-        parameter_names = list(fit.get("parameters", {}).keys())
-
-    initial = fit.get("initial_parameters", {})
-    bounds = fit.get("bounds", {})
-    lower = bounds.get("lower", {})
-    upper = bounds.get("upper", {})
-    fixed_parameters = fit.get("fixed_parameters", {})
-    parameters = fit.get("parameters", {})
-    errors = fit.get("errors", {})
-
-    rows = []
-    model = fit["model"]
-    for name in parameter_names:
-        rows.append(
-            {
-                "parameter_latex": model.pretty_name(name),
-                "parameter": name,
-                "initial": initial.get(name, np.nan),
-                "lower_bound": lower.get(name, np.nan),
-                "upper_bound": upper.get(name, np.nan),
-                "fixed": name in fixed_parameters,
-                "fit_value": parameters.get(name, np.nan),
-                "fit_error": errors.get(name, np.nan),
-            }
-        )
-
-    if as_dataframe:
-        return pd.DataFrame(rows)
-    return rows
-
-
-def print_npe_fractions( fractions, n_total=None ):
+    Plot fit result + residuals + correlation matrix.
     """
-    Pretty-print PE fractions.
+    fig      = plt.figure( figsize=figsize )
+    gs       = fig.add_gridspec( 2, 2, width_ratios=[3, 2], height_ratios=[3, 1], hspace=0.05, wspace=0.25 )
+    ax_fit   = fig.add_subplot( gs[0, 0] )
+    ax_resid = fig.add_subplot( gs[1, 0], sharex=ax_fit, )
+    ax_corr  = fig.add_subplot( gs[:, 1] )
 
-    Parameters
-    ----------
-    fractions : dict
-        {n_pe: fraction}
+    plot_fit_result( fit, title=title, ax=ax_fit, ax_resid=ax_resid, **plot_fit_kwargs )
+    plot_correlation_matrix( fig, ax_corr, fit, shrink_colorbar=shrink_colorbar  )
 
-    n_total : float or None
-        If provided, also print the expected number of events.
-    """
-
-    print("Photoelectron fractions")
-    print("-" * 40)
-
-    for n_pe in sorted(fractions):
-
-        frac = fractions[n_pe]
-
-        if n_total is None:
-
-            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%" )
-
-        else:
-
-            print( f"{n_pe:2d} PE : " f"{100*frac:7.3f}%   " f"({n_total*frac:10.1f} events)" )
-
-    print("-" * 40)
-
-    print( f"sum = {100*sum(fractions.values()):.3f}%" )
+    return ( fig, ax_fit, ax_resid, ax_corr )
 
 
-def plot_correlation_matrix(fig, ax, fit):
-
-    cov = fit["covariance"]
-    names = fit["fitted_parameter_names"]
-    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
-    labels = [ rf"${fit['model'].pretty_name(name)}$" for name in names]
-
-    im = ax.imshow( corr, vmin=-1, vmax=1, cmap="coolwarm" )
-    ax.set_xticks( np.arange(len(names)) )
-    ax.set_yticks( np.arange(len(names)) )
-    ax.set_xticklabels(labels, rotation=45, ha="right")
-    ax.set_yticklabels(labels)
-
-    for i in range(len(names)):
-        for j in range(len(names)):
-            ax.text( j, i, f"{corr[i,j]:.2f}", ha="center", va="center", fontsize=8 )
-
-    fig.colorbar( im,ax=ax,label="Correlation coefficient", shrink=0.8 )
-    ax.set_title( fit["model_name"] )
-
-def print_fit_result_table(fit):
-
-    table = fit_result_table( fit, as_dataframe=False )
-
-    def fmt(x):
-        if np.isnan(x):
-            return "nan"
-        return f"{x:.4f}"
-
-    print( f"{'Parameter':<15}" f"{'Initial':>12}" f"{'Fit':>12}" f"{'Error':>12}" f"{'Bounds':>22}" f"{'Fixed':>8}" )
-    print("-" * 81)
-
-    for row in table:
-        bounds = ( f"[{row['lower_bound']:.1f}, " f"{row['upper_bound']:.1f}]" )
-        print( f"{row['parameter']:<15}" f"{fmt(row['initial']):>12}" f"{fmt(row['fit_value']):>12}" f"{fmt(row['fit_error']):>13}" f"{bounds:>23}" f"{str(row['fixed']):>8}" )

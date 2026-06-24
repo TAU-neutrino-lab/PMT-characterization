@@ -28,19 +28,7 @@ def fit_bellamy_spe(
     )
 
 
-def bellamy_spe_model(
-    x,
-    n_total,
-    mu_pe,
-    q0_mV_ns,
-    sigma0_mV_ns,
-    q1_mV_ns,
-    sigma1_mV_ns,
-    w,
-    alpha,
-    bin_width,
-    max_pe: int = 8,
-):
+def bellamy_spe_model( x, n_total, mu_pe, q0_mV_ns, sigma0_mV_ns, q1_mV_ns, sigma1_mV_ns, w, alpha, bin_width, max_pe: int = 8 ):
     """Bellamy et al. PMT response model.
 
     This is the Poisson-weighted PM response where each n-PE Gaussian response is
@@ -110,8 +98,8 @@ BELLAMY_SPE = FitModel(
     ),
 
     model = bellamy_spe_model,
-
     components = bellamy_spe_components,
+    fractions=bellamy_npe_fractions,
 
     default_kwargs={
         "max_pe": 8,
