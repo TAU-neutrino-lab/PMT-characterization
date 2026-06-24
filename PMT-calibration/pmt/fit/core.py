@@ -13,30 +13,17 @@ class FitModel:
 
     Parameters
     ----------
-    name
-        Unique model name.
-
-    parameter_names
-        Callable returning ordered parameter names.
-
-    model
-        Callable implementing the fit model.
-
-    components
-        Callable returning component curves for plotting.
     """
 
     name: str
-
     parameter_names: tuple[str, ...]
-
     model: Callable
-
     components: Callable | None = None
+    default_kwargs: dict = field( default_factory=dict )
+    pretty_parameter_names: dict = field(default_factory=dict)
 
-    default_kwargs: dict = field(
-        default_factory=dict
-    )
+    def pretty_name(self, parameter_name: str) -> str:
+        return self.pretty_parameter_names.get(parameter_name, parameter_name)
 
 
 def fit_histogram_model( charge_mV_ns, model: FitModel, p0, fit_range=None, bins=250, model_kwargs=None, maxfev=100000):
@@ -337,6 +324,10 @@ def plot_fit_result(
     #
     # Fit summary box
     #
+        #
+    # Fit summary box
+    #
+
     parameters = fit["parameters"]
     errors = fit["errors"]
 
@@ -346,42 +337,53 @@ def plot_fit_result(
         else np.nan
     )
 
-    summary_lines = [ rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$" ]
+    summary_lines = [
+        rf"$\chi^2/\mathrm{{ndof}} = {chi2_ndof:.2f}$"
+    ]
 
-    pretty_parameter_names = {
-        "n_total": r"N_{tot}",
-        "mu_pe": r"\mu_{PE}",
-        "q0_mV_ns": r"Q_0",
-        "sigma0_mV_ns": r"\sigma_0",
-        "q1_mV_ns": r"Q_1",
-        "sigma1_mV_ns": r"\sigma_1",
-        "alpha": r"\alpha",
-    }
+    model = fit["model"]
 
-    already_shown = set()
-    for par, latex_name in pretty_parameter_names.items():
-        if par in parameters:
-            # summary_lines.append( rf"${latex_name} = " rf"{parameters[par]:.3g}" rf" \pm {errors[par]:.2g}$")
-            summary_lines.append( rf"${latex_name} = " rf"{parameters[par]:.3f}" rf" \pm {errors[par]:.2f}$")
-            already_shown.add(par)
-    
     for par in fit["parameter_names"]:
-        if par in already_shown:
-            continue
+
         if par not in parameters:
             continue
-        # summary_lines.append( f"{par} = " f"{parameters[par]:.3g}" f" ± {errors[par]:.2g}" )
-        summary_lines.append( f"{par} = " f"{parameters[par]:.3f}" f" ± {errors[par]:.2f}" )
+
+        pretty_name = model.pretty_name(par)
+
+        value = parameters[par]
+        error = errors[par]
+
+        if par in fit["fixed_parameters"]:
+
+            summary_lines.append(
+                rf"${pretty_name} = {value:.3f}$ (fixed)"
+            )
+
+        else:
+
+            summary_lines.append(
+                rf"${pretty_name} = "
+                rf"{value:.3f}"
+                rf" \pm {error:.2f}$"
+            )
 
     summary_text = "\n".join(summary_lines)
 
-    ax.text( 0.98, 0.98, summary_text, transform=ax.transAxes, ha="right", va="top", fontsize=9,
+    ax.text(
+        0.98,
+        0.98,
+        summary_text,
+        transform=ax.transAxes,
+        ha="right",
+        va="top",
+        fontsize=9,
         bbox=dict(
             boxstyle="round",
             facecolor="white",
             alpha=0.85,
         ),
     )
+   
     ax.legend(ncol=2, fontsize=8)
 
     ax_resid.axhline(0, color="black", lw=1)
@@ -401,15 +403,6 @@ def plot_fit_result(
 
 def fit_result_table(fit, as_dataframe=True):
     """Summarize initial values, bounds, fixed flags, values, and errors.
-
-    Parameters
-    ----------
-    fit
-        Fit dictionary returned by ``fit_histogram_model`` or one of its model
-        wrappers.
-    as_dataframe
-        If True, return a pandas DataFrame when pandas is available. If pandas
-        is not installed, a list of dictionaries is returned instead.
     """
     parameter_names = fit.get("parameter_names")
     if parameter_names is None:
@@ -424,9 +417,11 @@ def fit_result_table(fit, as_dataframe=True):
     errors = fit.get("errors", {})
 
     rows = []
+    model = fit["model"]
     for name in parameter_names:
         rows.append(
             {
+                "parameter_latex": model.pretty_name(name),
                 "parameter": name,
                 "initial": initial.get(name, np.nan),
                 "lower_bound": lower.get(name, np.nan),
@@ -472,6 +467,41 @@ def print_npe_fractions( fractions, n_total=None ):
 
     print("-" * 40)
 
-    print(
-        f"sum = {100*sum(fractions.values()):.3f}%"
-    )
+    print( f"sum = {100*sum(fractions.values()):.3f}%" )
+
+
+def plot_correlation_matrix(fig, ax, fit):
+
+    cov = fit["covariance"]
+    names = fit["fitted_parameter_names"]
+    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
+    labels = [ rf"${fit['model'].pretty_name(name)}$" for name in names]
+
+    im = ax.imshow( corr, vmin=-1, vmax=1, cmap="coolwarm" )
+    ax.set_xticks( np.arange(len(names)) )
+    ax.set_yticks( np.arange(len(names)) )
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_yticklabels(labels)
+
+    for i in range(len(names)):
+        for j in range(len(names)):
+            ax.text( j, i, f"{corr[i,j]:.2f}", ha="center", va="center", fontsize=8 )
+
+    fig.colorbar( im,ax=ax,label="Correlation coefficient", shrink=0.8 )
+    ax.set_title( fit["model_name"] )
+
+def print_fit_result_table(fit):
+
+    table = fit_result_table( fit, as_dataframe=False )
+
+    def fmt(x):
+        if np.isnan(x):
+            return "nan"
+        return f"{x:.4f}"
+
+    print( f"{'Parameter':<15}" f"{'Initial':>12}" f"{'Fit':>12}" f"{'Error':>12}" f"{'Bounds':>22}" f"{'Fixed':>8}" )
+    print("-" * 81)
+
+    for row in table:
+        bounds = ( f"[{row['lower_bound']:.1f}, " f"{row['upper_bound']:.1f}]" )
+        print( f"{row['parameter']:<15}" f"{fmt(row['initial']):>12}" f"{fmt(row['fit_value']):>12}" f"{fmt(row['fit_error']):>13}" f"{bounds:>23}" f"{str(row['fixed']):>8}" )

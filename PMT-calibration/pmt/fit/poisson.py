@@ -98,6 +98,15 @@ POISSON_SPE = FitModel(
     default_kwargs={
         "max_pe": 8,
     },
+    
+    pretty_parameter_names={
+        "n_total": r"N_{\mathrm{tot}}",
+        "mu_pe": r"\mu_{\mathrm{PE}}",
+        "q0_mV_ns": r"Q_0",
+        "sigma0_mV_ns": r"\sigma_0",
+        "q1_mV_ns": r"Q_1",
+        "sigma1_mV_ns": r"\sigma_1",
+    },
 )
 
 
