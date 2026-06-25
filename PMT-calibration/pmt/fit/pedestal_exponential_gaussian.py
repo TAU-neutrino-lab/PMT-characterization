@@ -40,7 +40,6 @@ PEDESTAL_EXPGAUSS = FitModel(
         "n_total",
         "q0_mV_ns",
         "sigma0_mV_ns",
-        # 'w',
         'alpha'
     ),
 
