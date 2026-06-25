@@ -27,6 +27,18 @@ class FitModel:
         return self.pretty_parameter_names.get(parameter_name, parameter_name)
 
 
+
+def compute_gain(Q1_mV_ns, Q1_mV_ns_err,  oscilloscpe_impedance_ohms=50):
+    e = 1.60217663e-19# Coulombs
+    QSPE = (Q1_mV_ns*1e-3*1e-9)/oscilloscpe_impedance_ohms# Coulombs
+    gain = QSPE/e
+    gain_err = ((Q1_mV_ns_err*1e-3*1e-9)/oscilloscpe_impedance_ohms)/e
+    return gain, gain_err
+
+# -------------------------------------
+#             Fit Functions
+# -------------------------------------
+
 def fit_histogram_model( charge_mV_ns, model: FitModel, p0, fit_range=None, bins=250, model_kwargs=None, maxfev=100000):
 
     charge_mV_ns = np.asarray(charge_mV_ns, dtype=float)
@@ -208,14 +220,6 @@ def parse_fit_parameter_specs(p0, parameter_names):
         ),
     }
 
-def compute_gain(Q1_mV_ns, oscilloscpe_impedance_ohms=50):
-    e = 1.60217663e-19# Coulombs
-    QSPE = (Q1_mV_ns*1e-3*1e-9)/oscilloscpe_impedance_ohms# Coulombs
-    return QSPE/e
-
-# -------------------------------------
-#             Fit Functions
-# -------------------------------------
 
 # -------------------------------------
 #             Helpers
