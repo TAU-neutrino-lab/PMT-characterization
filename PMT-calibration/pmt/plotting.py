@@ -39,7 +39,7 @@ def add_hist_stats(ax, values, bins, color, xlabel, title, unit="", show_stat=Tr
 
 def add_plot_waveforms(ax, time, selected_waveforms, title=""):
     for waveform in selected_waveforms:
-        ax.plot(time, waveform, alpha=0.50)
+        ax.plot(time, waveform) #alpha=0.50
     ax.set_xlabel("Time (ns)")
     ax.set_ylabel("Voltage (mV)")
     ax.set_title(title);

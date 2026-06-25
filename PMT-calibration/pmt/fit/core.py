@@ -123,7 +123,6 @@ def fit_histogram_model( charge_mV_ns, model: FitModel, p0, fit_range=None, bins
         "model_kwargs": dict(model_kwargs),
     }
 
-
 def parse_fit_parameter_specs(p0, parameter_names):
     """Parse ``{name: [initial, lower, upper, is_fixed]}`` fit specs.
 
@@ -209,6 +208,10 @@ def parse_fit_parameter_specs(p0, parameter_names):
         ),
     }
 
+def compute_gain(Q1_mV_ns, oscilloscpe_impedance_ohms=50):
+    e = 1.60217663e-19# Coulombs
+    QSPE = (Q1_mV_ns*1e-3*1e-9)/oscilloscpe_impedance_ohms# Coulombs
+    return QSPE/e
 
 # -------------------------------------
 #             Fit Functions
