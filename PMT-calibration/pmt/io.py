@@ -186,16 +186,8 @@ def load_preprocessed_waveforms(
 
         # ---------- Baseline subtraction ----------
 
-        if subtract_baseline:
-
-            voltage_mV, baseline_event_info = (
-                subtract_baseline(
-                    chunk["time_ns"],
-                    voltage_mV,
-                    baseline_window_ns=baseline_window_ns,
-                )
-            )
-
+        if baseline_subtraction:
+            voltage_mV, baseline_event_info = ( subtract_baseline( chunk["time_ns"], voltage_mV, baseline_window_ns=baseline_window_ns ) )
         else:
             baseline_event_info = {}
 

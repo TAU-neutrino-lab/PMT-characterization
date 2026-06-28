@@ -6,6 +6,10 @@ import numpy as np
 from scipy.signal import find_peaks, peak_widths
 import pandas as pd
 
+"""
+    Builds a pandas dataframe
+"""
+
 
 # ----------------------------------------------------------------
 # Saturated waveforms
@@ -135,10 +139,6 @@ def _charge_around_time( t_ns, v_mV, center_time_ns, pre_ns, post_ns ):
         v_mV[mask],
         t_ns[mask],
     )
-
-
-
-
 
 # ----------------------------------------------------------------
 # Waveform analysis 

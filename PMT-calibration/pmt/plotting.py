@@ -154,7 +154,12 @@ def plot_waveforms_in_snr_range( ax, df_sel, waveforms_sel, time_ns, snr_min=7, 
 
     ax.set_xlabel("Time (ns)")
     ax.set_ylabel("Voltage (mV)")
-    ax.set_title(f"{snr_min} < SNR < {snr_max}" )
+    if snr_max is None:
+        ax.set_title(f"{snr_min} < SNR" )
+    elif snr_min is None:
+        ax.set_title(f"SNR < {snr_max}" )
+    else:
+        ax.set_title(f"{snr_min} < SNR < {snr_max}" )
 
 def plot_snr_vs_amplitude(ax, df_sel):
 
