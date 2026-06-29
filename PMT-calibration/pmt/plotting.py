@@ -69,46 +69,37 @@ def plot_baseline_stability(ax, values, unit="mV", max_points=20000):
     ax.set_title(title)
     ax.legend(fontsize=10)
 
-def plot_snr_distribution(ax, df_sel):
+def plot_snr_distribution(ax, df):
 
-    ax.hist( df_sel["snr"], bins=100, log=True )
-
+    ax.hist( df["snr"], bins=100, log=True )
     ax.set_xlabel("SNR")
     ax.set_ylabel("Events")
     ax.set_title("SNR distribution");
 
-def plot_mean_waveforms_vs_snr( ax,  df_sel, waveforms_sel, time_ns, cuts=(2, 5, 8, 10, 15, 20)):
+def plot_mean_waveforms_vs_snr( ax,  df, waveforms, time_ns, cuts=(2, 5, 8, 10, 15, 20)):
 
     for cut in cuts:
 
-        mask = df_sel["snr"] > cut
+        mask = df["snr"] > cut
         if mask.sum() < 10:
             continue
 
-        mean_waveform = np.mean(
-            waveforms_sel[mask.values],
-            axis=0,
-        )
-
-        ax.plot(
-            time_ns,
-            mean_waveform,
-            label=f"SNR>{cut}",
-        )
+        mean_waveform = np.mean( waveforms[mask.values], axis=0 )
+        ax.plot( time_ns, mean_waveform, label=f"SNR>{cut}" )
 
     ax.legend()
     ax.set_xlabel("Time (ns)")
     ax.set_ylabel("Voltage (mV)")
     ax.set_title("Mean waveform vs SNR cut")
 
-def plot_charge_histograms_vs_snr( ax,  df_sel, cuts=(2, 5, 8, 10, 15) ):
+def plot_charge_histograms_vs_snr( ax,  df, cuts=(2, 5, 8, 10, 15) ):
 
     for cut in cuts:
 
-        mask = df_sel["snr"] > cut
+        mask = df["snr"] > cut
 
         ax.hist(
-            df_sel.loc[ mask, "area_mV_ns" ],
+            df.loc[ mask, "area_mV_ns" ],
             bins=200,
             histtype="step",
             density=True,
@@ -120,12 +111,12 @@ def plot_charge_histograms_vs_snr( ax,  df_sel, cuts=(2, 5, 8, 10, 15) ):
     ax.set_ylabel("Density")
     ax.set_title("Charge distribution vs SNR cut")
 
-def plot_snr_efficiency( ax,  df_sel, cuts=np.arange(1, 25) ):
+def plot_snr_efficiency( ax,  df, cuts=np.arange(1, 25) ):
 
     efficiency = []
 
     for cut in cuts:
-        efficiency.append( np.mean( df_sel["snr"] > cut ) )
+        efficiency.append( np.mean( df["snr"] > cut ) )
 
     ax.plot( cuts, efficiency, marker="o" )
 
@@ -134,36 +125,39 @@ def plot_snr_efficiency( ax,  df_sel, cuts=np.arange(1, 25) ):
     ax.set_title("Efficiency vs SNR cut")
     ax.grid()
 
-def plot_waveforms_in_snr_range( ax, df_sel, waveforms_sel, time_ns, snr_min=7, snr_max=9, n_waveforms=50 ):
+def plot_waveforms_in_snr_range( ax, df, waveforms, time_ns, snr_min=None, snr_max=None, n_waveforms=50 ):
 
-    mask = (
-        (df_sel["snr"] > snr_min)
-        &
-        (df_sel["snr"] < snr_max)
-    )
+    if snr_min is None and snr_max is None:
+        mask = np.ones(len(df), dtype=bool)
 
-    for waveform in waveforms_sel[
-        mask.values
-    ][:n_waveforms]:
+    elif snr_min is None:
+        mask = df["snr"] < snr_max
 
-        ax.plot(
-            time_ns,
-            waveform,
-            alpha=0.9,
-        )
+    elif snr_max is None:
+        mask = df["snr"] > snr_min
+
+    else:
+        mask = df["snr"].between(snr_min, snr_max)
+
+    for waveform in waveforms[mask.values][:n_waveforms]:
+        ax.plot( time_ns, waveform, alpha=0.9 )
 
     ax.set_xlabel("Time (ns)")
     ax.set_ylabel("Voltage (mV)")
-    if snr_max is None:
-        ax.set_title(f"{snr_min} < SNR" )
+
+    if snr_min is None and snr_max is None:
+        title = "All waveforms"
     elif snr_min is None:
-        ax.set_title(f"SNR < {snr_max}" )
+        title = f"SNR < {snr_max:g}"
+    elif snr_max is None:
+        title = f"SNR > {snr_min:g}"
     else:
-        ax.set_title(f"{snr_min} < SNR < {snr_max}" )
+        title = f"{snr_min:g} < SNR < {snr_max:g}"
+    ax.set_title(title)
 
-def plot_snr_vs_amplitude(ax, df_sel):
+def plot_snr_vs_amplitude(ax, df):
 
-    ax.scatter( df_sel["peak_amplitude_mV"], df_sel["snr"], s=1, alpha=0.7 )
+    ax.scatter( df["peak_amplitude_mV"], df["snr"], s=1, alpha=0.7 )
     ax.set_xlabel("Peak amplitude (mV)")
     ax.set_ylabel("SNR")
 
