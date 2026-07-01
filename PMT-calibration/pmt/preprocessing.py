@@ -79,7 +79,7 @@ def remove_saturated_waveforms( voltage_mV, metadata, low_limit_mV=None, high_li
 # Baseline 
 # ----------------------------------------------------------------
 
-def subtract_baseline(time_ns, voltage_mV, baseline_window_ns=None):
+def baseline_subtraction(time_ns, voltage_mV, baseline_window_ns=None):
     """baseline is the mean wavefrom in baseline_window_ns."""
 
     if baseline_window_ns is None:
@@ -394,9 +394,11 @@ def build_waveform_feature_dataframe(
 
 
 
-__all__ = ["subtract_baseline",
+__all__ = ["baseline_subtraction",
            "remove_saturated_waveforms", 
            "build_waveform_feature_dataframe",
+
+           "_fractional_crossing_time"
            ]
 
 

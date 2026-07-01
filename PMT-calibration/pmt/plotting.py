@@ -37,14 +37,21 @@ def add_hist_stats(ax, values, bins, color, xlabel, title, unit="", show_stat=Tr
     ax.set_title(title)
     ax.legend(fontsize=8, loc=legend_loc)
 
-def add_plot_waveforms(ax, time, selected_waveforms, title=""):
-    for waveform in selected_waveforms:
+def add_plot_waveforms(ax, time, waveforms, title=""):
+    for waveform in waveforms:
         ax.plot(time, waveform) #alpha=0.50
     ax.set_xlabel("Time (ns)")
     ax.set_ylabel("Voltage (mV)")
     ax.set_title(title);
 
-# def add_plot()
+def add_mean_waveform( ax, time_ns, waveforms, label="", **kwargs ):
+    mean = waveforms.mean(axis=0)
+    std = waveforms.std(axis=0)
+
+    ax.plot( time_ns, mean, label=label, **kwargs)
+    ax.fill_between( time_ns, mean - std, mean + std, alpha=0.5 )
+
+    return mean, std
 
 # ----------------------------------------------------------------
 # dedicated plots
@@ -160,6 +167,8 @@ def plot_snr_vs_amplitude(ax, df):
     ax.scatter( df["peak_amplitude_mV"], df["snr"], s=1, alpha=0.7 )
     ax.set_xlabel("Peak amplitude (mV)")
     ax.set_ylabel("SNR")
+
+
 
 # ----------------------------------------------------------------
 # plots wrappers

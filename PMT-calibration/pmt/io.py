@@ -40,6 +40,7 @@ def read_waveform_sample(
     *,
     max_events: int | None = 1000,
     channel: str = "Channel 1",
+    time_origin="original" # options "original", "zero"
 ):
     """Read a sample of segmented PMT waveforms from one or more files.
 
@@ -89,9 +90,13 @@ def read_waveform_sample(
             remaining -= len(sample_segments)
             if remaining <= 0:
                 break
+        
+    time_ns = np.concatenate(all_time, axis=0)
+    if time_origin=="zero":
+        time_ns = time_ns - time_ns[0]
 
     return {
-        "time_ns": np.concatenate(all_time, axis=0),
+        "time_ns": time_ns,
         "voltage_mV": np.concatenate(all_voltage, axis=0),
         "metadata": all_metadata,
         "sample_segments": all_segments,
@@ -106,12 +111,13 @@ def load_preprocessed_waveforms(
     channel="Channel 1",
     chunk_size=512,
     remove_saturation=True,
-    baseline_subtraction=True,
+    subtract_baseline=True,
     baseline_window_ns=(0.0, 20.0),
     low_limit_mV=None,
     high_limit_mV=None,
     margin_mV=0.0,
     max_saturated_samples=0,
+    time_origin="original" # options "original", "zero"
 ):
     """
     Load waveforms and optionally apply preprocessing.
@@ -145,15 +151,20 @@ def load_preprocessed_waveforms(
     for chunk in iter_keysight_chunks( files, channel=channel, chunk_size=chunk_size ):
 
         if time_ns is None:
-            time_ns = chunk["time_ns"]
+            time_ns_original = chunk["time_ns"]
+            if time_origin == "original":
+                time_ns = time_ns_original
+            elif time_origin == "zero":
+                time_ns = time_ns_original - time_ns_original[0]
+            else:
+                raise ValueError("time_origin must be 'original' or 'zero'")
 
-        elif len(time_ns) != len(chunk["time_ns"]):
-            raise ValueError(
-                f"Number of samples changed in {chunk['filename']}"
-            )
+        # elif len(time_ns_original) != len(chunk["time_ns"]):
+        #     raise ValueError( f"Number of samples changed in {chunk['filename']}")
+        elif not np.allclose(chunk["time_ns"], time_ns_original):
+            raise ValueError( f"Time axis changed in {chunk['filename']}")
 
         voltage_mV = chunk["voltage_mV"]
-
         n_events_chunk = len(voltage_mV)
 
         # ---------- Saturation Rejection ----------
@@ -186,16 +197,17 @@ def load_preprocessed_waveforms(
 
         # ---------- Baseline subtraction ----------
 
-        if baseline_subtraction:
-            voltage_mV, baseline_event_info = ( subtract_baseline( chunk["time_ns"], voltage_mV, baseline_window_ns=baseline_window_ns ) )
+        if subtract_baseline:
+            voltage_mV, baseline_event_info = ( baseline_subtraction( time_ns, voltage_mV, baseline_window_ns=baseline_window_ns ) )
         else:
             baseline_event_info = {}
 
         # ---------- Merge event-level metadata ----------
 
-        chunk_event_info = {}
-        chunk_event_info.update( saturation_event_info)
-        chunk_event_info.update( baseline_event_info)
+        chunk_event_info = {
+            **saturation_event_info,
+            **baseline_event_info,
+        }
 
         for key, values in chunk_event_info.items():
             if key not in event_info_parts:
