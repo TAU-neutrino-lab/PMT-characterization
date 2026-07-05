@@ -388,15 +388,28 @@ def build_waveform_feature_dataframe(
     return df
 
 # ----------------------------------------------------------------
-# Selection wrappers 
+# Helpers
 # ----------------------------------------------------------------
 
+def apply_cut_v(df, waveforms, variable, range=(0, 11)):
+    """
+     return the waveform array after applying a cut on the corresponding dataframe
+        
+    """
+    if range[0] is None:
+        mask = df[variable] <= range[1]
+    elif range[1] is None:
+        mask = df[variable] > range[0]
+    else:
+        mask = (df[variable] > range[0]) & (df[variable] <= range[1])
+    return waveforms[mask.values], mask
 
 
 
 __all__ = ["baseline_subtraction",
            "remove_saturated_waveforms", 
            "build_waveform_feature_dataframe",
+           "apply_cut_v",
 
            "_fractional_crossing_time"
            ]

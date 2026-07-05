@@ -44,12 +44,15 @@ def add_plot_waveforms(ax, time, waveforms, title=""):
     ax.set_ylabel("Voltage (mV)")
     ax.set_title(title);
 
-def add_mean_waveform( ax, time_ns, waveforms, label="", **kwargs ):
+def add_mean_waveform( ax, time_ns, waveforms, title="", label="", **kwargs ):
     mean = waveforms.mean(axis=0)
     std = waveforms.std(axis=0)
 
     ax.plot( time_ns, mean, label=label, **kwargs)
     ax.fill_between( time_ns, mean - std, mean + std, alpha=0.5 )
+    ax.set_xlabel("Time (ns)")
+    ax.set_ylabel("Voltage (mV)")
+    ax.set_title(title);
 
     return mean, std
 
@@ -86,7 +89,6 @@ def plot_snr_distribution(ax, df):
 def plot_mean_waveforms_vs_snr( ax,  df, waveforms, time_ns, cuts=(2, 5, 8, 10, 15, 20)):
 
     for cut in cuts:
-
         mask = df["snr"] > cut
         if mask.sum() < 10:
             continue

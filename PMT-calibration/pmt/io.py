@@ -159,10 +159,13 @@ def load_preprocessed_waveforms(
             else:
                 raise ValueError("time_origin must be 'original' or 'zero'")
 
-        # elif len(time_ns_original) != len(chunk["time_ns"]):
-        #     raise ValueError( f"Number of samples changed in {chunk['filename']}")
-        elif not np.allclose(chunk["time_ns"], time_ns_original):
-            raise ValueError( f"Time axis changed in {chunk['filename']}")
+        elif len(time_ns_original) != len(chunk["time_ns"]):
+            raise ValueError( f"Number of samples changed in {chunk['filename']}")
+        # elif not np.allclose(chunk["time_ns"], time_ns_original): # checks whether two arrays are element-wise approximately equal within a given mathematical tolerance
+        #     print(chunk["time_ns"])
+        #     print()
+        #     print(time_ns_original)
+        #     raise ValueError( f"Time axis changed in {chunk['filename']}")
 
         voltage_mV = chunk["voltage_mV"]
         n_events_chunk = len(voltage_mV)
