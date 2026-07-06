@@ -20,6 +20,7 @@ from lab_tools.io import (
 )
 
 from .preprocessing import *
+from .selection import *
 
 
 def find_pmt_files(
@@ -254,8 +255,57 @@ def load_preprocessed_waveforms(
     return result
 
 
+def load_files_one_go(files, chunk_size, baseline_window_ns, channel):
+    prerocessed_data = load_preprocessed_waveforms(
+    files,
+    chunk_size=chunk_size,
+    remove_saturation=True,
+    subtract_baseline=True,
+    baseline_window_ns=baseline_window_ns,
+    low_limit_mV=None, 
+    high_limit_mV=None, 
+    margin_mV=0.0,
+    max_saturated_samples=0,
+    channel=channel,
+    time_origin='zero',
+    )
+    time_ns = prerocessed_data["time_ns"]
+    voltage_mV = prerocessed_data["voltage_mV"]
+
+    preprocessed_event_info = {k: v for k, v in prerocessed_data['event_info'].items() if k not in ['is_saturated', 'n_saturated_samples']}
+    preprocessed_event_info.update({ 
+        'event_file': prerocessed_data['event_file'],
+        'event_segment': prerocessed_data['event_segment']
+    })
+
+    df = build_waveform_feature_dataframe(
+        time_ns,
+        voltage_mV,
+        peak_threshold_mV=None,
+        second_peak_min_height_frac=0.2,
+        pre_peak_ns = 20,
+        post_peak_ns = 80,
+        pre_rise_ns = 10, 
+        post_rise_ns = 80, 
+        extra=preprocessed_event_info 
+    )
+    cutflow = CutFlow(len(df))
+
+    cutflow.apply( "peaks in the baseline", reject_baseline_pulses( df, baseline_window_ns, min_peak_height_mV=0.5 ) )
+    cutflow.print()
+
+    df_sel = df[cutflow.mask].copy()
+    waveforms_sel = voltage_mV[cutflow.mask]
+
+    return time_ns, waveforms_sel, df_sel
+
+
+
+
+
 __all__ = [
     "find_pmt_files",
     "load_preprocessed_waveforms",
     "read_waveform_sample",
+    "load_files_one_go"
 ]

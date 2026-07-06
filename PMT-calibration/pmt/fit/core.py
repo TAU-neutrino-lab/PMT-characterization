@@ -581,13 +581,27 @@ def plot_fit_summary( fit, title="", figsize=(20, 8), shrink_colorbar=0.5, **plo
 # -------------------------------------
 #          save fit results
 # -------------------------------------
-def pack_fit_results(fit):
+def pack_fit_results(fit_res):
+    parameter_fields = {
+        "value": fit_res.get("parameters"),
+        "error": fit_res.get("errors"),
+        "initial": fit_res.get("initial_parameters"),
+        "lower_bound": fit_res.get("bounds", {}).get("lower"),
+        "upper_bound": fit_res.get("bounds", {}).get("upper"),
+        "fixed": fit_res.get("fixed"),
+    }
+    names = fit_res["parameters"].keys()
+
     return {
         name: {
-            "value": float(value),
-            "error": fit["errors"].get(name),
+            field: (
+                None if d is None or name not in d
+                else d[name].item() if hasattr(d[name], "item")
+                else d[name]
+            )
+            for field, d in parameter_fields.items()
         }
-        for name, value in fit["parameters"].items()
+        for name in names
     }
 
 def to_python(obj):
@@ -613,6 +627,8 @@ def save_fit_results(fit_res, output_path):
     results = {
         "fit_model": fit_res['model_name'],
         "bin_width": fit_res['bin_width'],
+        "counts": fit_res['counts'],
+        "nbins": fit_res['counts'].shape[0],
         "fit_range": fit_res['fit_range'],
         "parameter_names": fit_res['parameter_names'],
         "fixed_parameters": fit_res['fixed_parameters'],

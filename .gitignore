@@ -24,4 +24,6 @@ improve_codex.ipynb
 # folders
 data/
 plots_*/
+plots/
+fit_data/
 20260625_plots_fit_results_Led1_1step/*
