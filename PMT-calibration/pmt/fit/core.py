@@ -4,6 +4,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
+import yaml
 
 
 @dataclass(frozen=True)
@@ -577,3 +578,55 @@ def plot_fit_summary( fit, title="", figsize=(20, 8), shrink_colorbar=0.5, **plo
     return ( fig, ax_fit, ax_resid, ax_corr )
 
 
+# -------------------------------------
+#          save fit results
+# -------------------------------------
+def pack_fit_results(fit):
+    return {
+        name: {
+            "value": float(value),
+            "error": fit["errors"].get(name),
+        }
+        for name, value in fit["parameters"].items()
+    }
+
+def to_python(obj):
+    if isinstance(obj, dict):
+        return {k: to_python(v) for k, v in obj.items()}
+
+    elif isinstance(obj, list):
+        return [to_python(v) for v in obj]
+
+    elif isinstance(obj, tuple):
+        return [to_python(v) for v in obj]   # YAML-friendly list
+
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    elif isinstance(obj, np.generic):
+        return obj.item()
+
+    else:
+        return obj
+    
+def save_fit_results(fit_res, output_path):
+    results = {
+        "fit_model": fit_res['model_name'],
+        "bin_width": fit_res['bin_width'],
+        "fit_range": fit_res['fit_range'],
+        "parameter_names": fit_res['parameter_names'],
+        "fixed_parameters": fit_res['fixed_parameters'],
+        "covariance": fit_res['covariance'],
+        "chi2": fit_res['chi2'],
+        "ndof": fit_res['ndof'],
+        "model_params": fit_res['model_kwargs'],
+        "fit_results": pack_fit_results(fit_res),
+    }
+    G, G_err = compute_gain(fit_res['parameters']['q1_mV_ns'], fit_res['errors']['q1_mV_ns'])
+    results["gain"] = {
+        "value": float(G),
+        "error": G_err,
+    }
+    results = to_python(results)
+    with open(output_path, "w") as f:
+        yaml.safe_dump(results, f, sort_keys=False)
