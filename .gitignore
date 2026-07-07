@@ -14,6 +14,11 @@ __pycache__/
 *.root
 *.npy
 *.npz
+*.pkl
 
 # specific files 
 Test.ipynb
+
+# folders
+plots/
+fit_data/
