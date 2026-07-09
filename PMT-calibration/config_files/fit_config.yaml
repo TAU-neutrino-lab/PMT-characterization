@@ -1,0 +1,199 @@
+
+WA0089_750V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_775V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_800V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_825V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_850V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_875V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   40.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   20.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  50.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_900V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   100.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   30.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  100.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_925V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   100.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   30.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  100.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_950V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   100.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   30.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  100.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  30.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_975V_525MHz_led100:
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   100.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   50.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  100.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  50.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
+
+WA0089_1000V_525MHz_led100:
+  fit_range: [-30, 250]
+  poisson:
+    initPars:
+      q0_mV_ns:     [-0.6, -6.0,   10.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  50.0, False]
+      q1_mV_ns:     [29.0, 1.0,   100.0, False]
+      sigma1_mV_ns: [12.0, 0.2,   50.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+   initPars:
+      q0_mV_ns:     [-0.6, -6.0, 10.0,  False]
+      sigma0_mV_ns: [ 3.9, 1e-4,  50.0,  False]
+      q1_mV_ns:     [30.0, 5.0,  100.0,  False]
+      sigma1_mV_ns: [12.0, 0.2,  50.0,  False]
+      mu_pe:        [0.06, 0.001, 5.0,  False]
+      w:            [0.2, 0., 1.,       False]
+      alpha:        [0.3, 0., 10.,      False]
