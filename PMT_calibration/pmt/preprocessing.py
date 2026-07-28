@@ -162,14 +162,67 @@ def _charge_around_time( time_ns, waveform_mV, center_time_ns, pre_ns, post_ns )
 
     return np.trapezoid( waveform_mV[lo:hi], time_ns[lo:hi] )
 
-def _fractional_crossing_time( t, v, fraction, rising=True):
+def integrate_led_window_charge(
+    time_ns,
+    waveforms_mV,
+    led_time_ns,
+    pre_led_ns=20.0,
+    post_led_ns=80.0,
+    polarity="negative",
+    require_full_window=False,
+):
+    """Integrate every waveform in one LED-synchronous time window.
+
+    Unlike ``charge_peak_window_mV_ns``, the window is not moved to the
+    detected maximum of each event.  This keeps pedestal and low-SNR events
+    unbiased by noise-peak finding and gives every event the same exposure to
+    baseline noise. If the requested bounds extend beyond the recorded trace,
+    the integral is clipped unless ``require_full_window`` is true.
+    """
+    time_ns = np.asarray(time_ns)
+    waveforms_mV = np.asarray(waveforms_mV)
+
+    if time_ns.ndim != 1:
+        raise ValueError("time_ns must be one-dimensional")
+    if waveforms_mV.ndim != 2 or waveforms_mV.shape[1] != len(time_ns):
+        raise ValueError("waveforms_mV must have shape (n_events, n_samples)")
+    if pre_led_ns < 0 or post_led_ns < 0:
+        raise ValueError("pre_led_ns and post_led_ns must be non-negative")
+    if pre_led_ns + post_led_ns <= 0:
+        raise ValueError("the LED integration window must have positive duration")
+
+    requested_start_ns = led_time_ns - pre_led_ns
+    requested_stop_ns = led_time_ns + post_led_ns
+    if require_full_window and (
+        requested_start_ns < time_ns[0] or requested_stop_ns > time_ns[-1]
+    ):
+        raise ValueError(
+            f"LED charge window [{requested_start_ns:g}, {requested_stop_ns:g}] ns "
+            f"is not contained in the waveform [{time_ns[0]:g}, {time_ns[-1]:g}] ns"
+        )
+
+    # searchsorted naturally clips the requested bounds to the recorded array.
+    # The caller can inspect ``charge_led_window_coverage`` from the feature
+    # dataframe to distinguish a complete from a truncated integral.
+    lo, hi = _time_window_indices(
+        time_ns, led_time_ns, pre_led_ns, post_led_ns
+    )
+    if hi <= lo:
+        return np.full(waveforms_mV.shape[0], np.nan)
+    pulse_positive_mV = -waveforms_mV if polarity == "negative" else waveforms_mV
+    return np.trapezoid(
+        pulse_positive_mV[:, lo:hi], time_ns[lo:hi], axis=1
+    )
+
+def _fractional_crossing_time(t, v, fraction, rising=True, peak_idx=None):
     """
     compute crossing time with interpolation between the bins
     CAUTION: v must be selected according to polarity (i.e. the peak is positive)"""
     t = np.asarray(t)
     v = np.asarray(v)
 
-    peak_idx = np.argmax(v)
+    if peak_idx is None:
+        peak_idx = np.argmax(v)
     peak_amplitude = v[peak_idx]
 
     threshold = fraction * peak_amplitude
@@ -209,29 +262,78 @@ def _fractional_crossing_time( t, v, fraction, rising=True):
 # Waveform analysis 
 # ----------------------------------------------------------------
 
-def _extract_waveform_features_fast( time_ns, waveforms_mV, polarity="negative", pre_peak_ns = 20, post_peak_ns = 80): 
+def _find_waveform_peaks(
+    waveforms_mV,
+    baseline_rms_mV,
+    *,
+    polarity="negative",
+    peak_snr_threshold=5.0,
+    peak_threshold_mV=None,
+    peak_prominence_snr=None,
+    peak_distance_samples=None,
+    peak_width_samples=None,
+):
+    """Find qualifying peaks in every waveform using noise-relative cuts."""
+    pulse_positive_mV = -np.asarray(waveforms_mV) if polarity == "negative" else np.asarray(waveforms_mV)
+    baseline_rms_mV = np.asarray(baseline_rms_mV, dtype=float)
+    if baseline_rms_mV.shape != (len(pulse_positive_mV),):
+        raise ValueError("baseline_rms_mV must contain one value per waveform")
+
+    peaks_by_event = []
+    properties_by_event = []
+    for waveform, baseline_rms in zip(pulse_positive_mV, baseline_rms_mV):
+        minimum_height = 0.0 if peak_threshold_mV is None else float(peak_threshold_mV)
+        if peak_snr_threshold is not None:
+            minimum_height = max(minimum_height, float(peak_snr_threshold) * baseline_rms)
+        prominence = (
+            None if peak_prominence_snr is None
+            else float(peak_prominence_snr) * baseline_rms
+        )
+        peaks, properties = find_peaks(
+            waveform,
+            height=minimum_height,
+            prominence=prominence,
+            distance=peak_distance_samples,
+            width=peak_width_samples,
+        )
+        peaks_by_event.append(peaks)
+        properties_by_event.append(properties)
+    return pulse_positive_mV, peaks_by_event, properties_by_event
+
+
+def _extract_waveform_features_fast(
+    time_ns,
+    pulse_positive_mV,
+    peaks_by_event,
+    properties_by_event,
+    pre_peak_ns=20,
+    post_peak_ns=80,
+):
 
     t = np.asarray(time_ns)
-    v = np.asarray(waveforms_mV)
+    v = np.asarray(pulse_positive_mV)
     n_events = len(v)
 
-    if polarity == "negative":
-        v = -v
-    else:
-        v = v
-
     # ---------- Peak ----------
-
-    peak_idx = np.argmax( v, axis=1 )
-    peak_amplitude = v[ np.arange(n_events), peak_idx ]
-    peak_time = t[ peak_idx ]
+    peak_idx = np.full(n_events, -1, dtype=int)
+    peak_amplitude = np.full(n_events, np.nan)
+    peak_time = np.full(n_events, np.nan)
+    for i, (peaks, properties) in enumerate(zip(peaks_by_event, properties_by_event)):
+        if len(peaks) == 0:
+            continue
+        primary_order = np.argmax(properties["peak_heights"])
+        peak_idx[i] = peaks[primary_order]
+        peak_amplitude[i] = properties["peak_heights"][primary_order]
+        peak_time[i] = t[peak_idx[i]]
 
     # ---------- Charge ----------
 
     area = np.trapezoid( v, t, axis=1 )
 
-    charge_peak_window = np.empty(n_events)
+    charge_peak_window = np.full(n_events, np.nan)
     for i, peak_time_i in enumerate(peak_time):
+        if not np.isfinite(peak_time_i):
+            continue
         lo, hi = _time_window_indices(time_ns, peak_time_i, pre_peak_ns, post_peak_ns)
 
         if hi <= lo:
@@ -247,10 +349,12 @@ def _extract_waveform_features_fast( time_ns, waveforms_mV, polarity="negative",
         "charge_peak_window_mV_ns": charge_peak_window
     }
 
-def _extract_waveform_features_slow( time_ns, waveforms_mV, peak_idx, peak_amplitude_mV,
-    peak_threshold_mV=None,
-    second_peak_min_height_frac=0.2,
-    polarity="negative",
+def _extract_waveform_features_slow(
+    time_ns,
+    pulse_positive_mV,
+    peak_idx,
+    peaks_by_event,
+    properties_by_event,
     pre_rise_ns = 10, 
     post_rise_ns = 80, 
 ):
@@ -286,23 +390,24 @@ def _extract_waveform_features_slow( time_ns, waveforms_mV, peak_idx, peak_ampli
         "peak_separation_ns": np.full(n_events, np.nan),
     }
     dt = np.mean(np.diff(time_ns))
-    for i, waveform in enumerate(waveforms_mV):
-
-        v = waveform
+    for i, v in enumerate(pulse_positive_mV):
         pk = peak_idx[i]
-        amp = peak_amplitude_mV[i]
-
-        if polarity == "negative":
-            v = -v
-        else:
-            v = v
+        peaks = peaks_by_event[i]
+        props = properties_by_event[i]
+        results["n_peaks"][i] = len(peaks)
+        if len(peaks) == 0:
+            continue
 
         # ---------- CFD ----------
 
         for frac in (10, 20, 30, 50, 90):
 
-            tr = _fractional_crossing_time( time_ns, v, fraction=frac / 100, rising=True )
-            tf = _fractional_crossing_time( time_ns, v, fraction=frac / 100, rising=False)
+            tr = _fractional_crossing_time(
+                time_ns, v, fraction=frac / 100, rising=True, peak_idx=pk
+            )
+            tf = _fractional_crossing_time(
+                time_ns, v, fraction=frac / 100, rising=False, peak_idx=pk
+            )
             results[f"cfd{frac}_rise_ns"][i] = tr
             results[f"cfd{frac}_fall_ns"][i] = tf
 
@@ -320,12 +425,6 @@ def _extract_waveform_features_slow( time_ns, waveforms_mV, peak_idx, peak_ampli
         except Exception:
             pass
 
-        # ---------- Peak Finding ----------
-
-        threshold = ( 0.1 * amp if peak_threshold_mV is None else peak_threshold_mV )
-        peaks, props = find_peaks( v, height=max( threshold, second_peak_min_height_frac * amp ) )
-        results["n_peaks"][i] = len(peaks)
-
         if len(peaks) > 1:
             order = np.argsort(props["peak_heights"])[::-1]
             second = peaks[order[1]]
@@ -339,11 +438,17 @@ def build_waveform_feature_dataframe(
     time_ns,
     waveforms_mV,
     peak_threshold_mV=None,
-    second_peak_min_height_frac=0.2,
+    peak_snr_threshold=5.0,
+    peak_prominence_snr=None,
+    peak_distance_samples=None,
+    peak_width_samples=None,
     pre_peak_ns = 20,
     post_peak_ns = 80,
     pre_rise_ns = 10, 
     post_rise_ns = 80, 
+    led_time_ns=None,
+    pre_led_ns=20.0,
+    post_led_ns=80.0,
     extra=None, # extra dictionary to be added to the dataframe
     polarity="negative"
 ):
@@ -360,16 +465,60 @@ def build_waveform_feature_dataframe(
     pandas.DataFrame
     """
     
-    fast = _extract_waveform_features_fast( time_ns, waveforms_mV, polarity, pre_peak_ns, post_peak_ns)
+    if extra is None or "baseline_rms_mV" not in extra:
+        raise ValueError(
+            "baseline_rms_mV is required for noise-relative peak detection"
+        )
+    pulse_positive_mV, peaks_by_event, properties_by_event = _find_waveform_peaks(
+        waveforms_mV,
+        extra["baseline_rms_mV"],
+        polarity=polarity,
+        peak_snr_threshold=peak_snr_threshold,
+        peak_threshold_mV=peak_threshold_mV,
+        peak_prominence_snr=peak_prominence_snr,
+        peak_distance_samples=peak_distance_samples,
+        peak_width_samples=peak_width_samples,
+    )
+    fast = _extract_waveform_features_fast(
+        time_ns, pulse_positive_mV, peaks_by_event, properties_by_event,
+        pre_peak_ns, post_peak_ns,
+    )
     peak_idx=fast["peak_idx"]
-    peak_amplitude_mV=fast["peak_amplitude_mV"]
-    slow = _extract_waveform_features_slow( time_ns=time_ns, waveforms_mV=waveforms_mV,  peak_idx=peak_idx,  peak_amplitude_mV=peak_amplitude_mV, 
-                                           peak_threshold_mV=peak_threshold_mV, second_peak_min_height_frac=second_peak_min_height_frac,
-                                           polarity=polarity, pre_rise_ns=pre_rise_ns, post_rise_ns=post_rise_ns )
+    slow = _extract_waveform_features_slow(
+        time_ns=time_ns,
+        pulse_positive_mV=pulse_positive_mV,
+        peak_idx=peak_idx,
+        peaks_by_event=peaks_by_event,
+        properties_by_event=properties_by_event,
+        pre_rise_ns=pre_rise_ns,
+        post_rise_ns=post_rise_ns,
+    )
 
     features = {}
     features.update(fast)
     features.update(slow)
+    max_excursion_idx = np.argmax(pulse_positive_mV, axis=1)
+    features["max_excursion_time_ns"] = np.asarray(time_ns)[max_excursion_idx]
+    features["max_excursion_amplitude_mV"] = pulse_positive_mV[
+        np.arange(len(pulse_positive_mV)), max_excursion_idx
+    ]
+    if led_time_ns is not None:
+        features["charge_led_window_mV_ns"] = integrate_led_window_charge(
+            time_ns,
+            waveforms_mV,
+            led_time_ns=led_time_ns,
+            pre_led_ns=pre_led_ns,
+            post_led_ns=post_led_ns,
+            polarity=polarity,
+        )
+        requested_duration_ns = pre_led_ns + post_led_ns
+        recorded_start_ns = max(time_ns[0], led_time_ns - pre_led_ns)
+        recorded_stop_ns = min(time_ns[-1], led_time_ns + post_led_ns)
+        recorded_duration_ns = max(0.0, recorded_stop_ns - recorded_start_ns)
+        features["charge_led_window_coverage"] = np.full(
+            len(waveforms_mV),
+            recorded_duration_ns / requested_duration_ns,
+        )
     df = pd.DataFrame(features)
 
     # ---------- extra features ----------
@@ -384,6 +533,9 @@ def build_waveform_feature_dataframe(
             df[key] = values
         if ( "baseline_rms_mV" in df.columns and "peak_amplitude_mV" in df.columns ):
             df["snr"] = ( df["peak_amplitude_mV"] / df["baseline_rms_mV"])
+            df["max_excursion_snr"] = (
+                df["max_excursion_amplitude_mV"] / df["baseline_rms_mV"]
+            )
 
     return df
 
@@ -409,10 +561,8 @@ def apply_cut_v(df, waveforms, variable, range=(0, 11)):
 __all__ = ["baseline_subtraction",
            "remove_saturated_waveforms", 
            "build_waveform_feature_dataframe",
+           "integrate_led_window_charge",
            "apply_cut_v",
 
            "_fractional_crossing_time"
            ]
-
-
-

@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Sequence
-
+import gc
+import time
+import pandas as pd
 import numpy as np
 
 
@@ -254,8 +256,177 @@ def load_preprocessed_waveforms(
 
     return result
 
+def load_files_streaming(
+    files,
+    *,
+    channel="Channel 1",
+    chunk_size=512,
+    baseline_window_ns=(0, 20),
+    time_origin="zero",
+    keep_waveform_sample=0,
+    led_time_ns=None,
+    pre_led_ns=20.0,
+    post_led_ns=80.0,
+    peak_snr_threshold=5.0,
+    peak_prominence_snr=None,
+    peak_distance_samples=None,
+    peak_width_samples=None,
+    progress_interval_s=10.0,
+):
+    """Load and reduce waveform chunks without retaining all waveforms.
 
-def load_files_one_go(files, chunk_size, baseline_window_ns, channel):
+    Progress is reported at most once per ``progress_interval_s`` seconds,
+    plus one final update. Set the interval to ``None`` to disable progress.
+    """
+    files = list(files)
+    df_parts = []
+    waveform_sample_parts = []
+    time_ns_ref = None
+
+    total_events = 0
+    total_kept_after_saturation = 0
+    total_kept_after_baseline_cut = 0
+    started_at = time.monotonic()
+    last_progress_at = started_at
+    current_file = None
+    files_started = 0
+
+    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
+        chunk_file = str(chunk["filename"])
+        if chunk_file != current_file:
+            current_file = chunk_file
+            files_started += 1
+        time_ns = chunk["time_ns"]
+
+        if time_origin == "zero":
+            time_ns = time_ns - time_ns[0]
+
+        if time_ns_ref is None:
+            time_ns_ref = time_ns
+        elif len(time_ns_ref) != len(time_ns):
+            raise ValueError(f"Number of samples changed in {chunk['filename']}")
+
+        voltage_mV = chunk["voltage_mV"]
+        n_events_chunk = len(voltage_mV)
+        total_events += n_events_chunk
+
+        # 1. Remove saturated events
+        voltage_mV, keep_mask, saturation_event_info, saturation_summary = (
+            remove_saturated_waveforms(
+                voltage_mV,
+                chunk["metadata"],
+                low_limit_mV=None,
+                high_limit_mV=None,
+                margin_mV=0.0,
+                max_saturated_samples=0,
+            )
+        )
+
+        total_kept_after_saturation += len(voltage_mV)
+
+        segment_numbers = np.asarray(chunk["segment_numbers"])[keep_mask]
+        event_files_chunk = np.array([chunk["filename"]] * n_events_chunk)[keep_mask]
+
+        # 2. Baseline subtraction
+        voltage_mV, baseline_event_info = baseline_subtraction(
+            time_ns_ref,
+            voltage_mV,
+            baseline_window_ns=baseline_window_ns,
+        )
+
+        # 3. Build features only for this chunk
+        extra = {
+            **baseline_event_info,
+            "event_file": event_files_chunk,
+            "event_segment": segment_numbers,
+        }
+
+        df_chunk = build_waveform_feature_dataframe(
+            time_ns_ref,
+            voltage_mV,
+            peak_threshold_mV=None,
+            peak_snr_threshold=peak_snr_threshold,
+            peak_prominence_snr=peak_prominence_snr,
+            peak_distance_samples=peak_distance_samples,
+            peak_width_samples=peak_width_samples,
+            pre_peak_ns=20,
+            post_peak_ns=80,
+            pre_rise_ns=10,
+            post_rise_ns=80,
+            led_time_ns=led_time_ns,
+            pre_led_ns=pre_led_ns,
+            post_led_ns=post_led_ns,
+            extra=extra,
+        )
+
+        # 4. Apply baseline-pulse rejection on this chunk
+        mask = reject_baseline_pulses(
+            df_chunk,
+            baseline_window_ns,
+            min_peak_height_mV=0.5,
+        )
+
+        df_chunk_sel = df_chunk[mask].copy()
+        total_kept_after_baseline_cut += len(df_chunk_sel)
+
+        df_parts.append(df_chunk_sel)
+
+        # Optional: keep only a small waveform sample for plotting
+        if keep_waveform_sample > 0:
+            remaining = keep_waveform_sample - sum(len(x) for x in waveform_sample_parts)
+            if remaining > 0:
+                waveform_sample_parts.append(voltage_mV[mask.values][:remaining].copy())
+
+        # 5. Explicitly release chunk arrays
+        del voltage_mV, df_chunk, df_chunk_sel
+        gc.collect()
+
+        now = time.monotonic()
+        if (
+            progress_interval_s is not None
+            and now - last_progress_at >= progress_interval_s
+        ):
+            elapsed_s = now - started_at
+            print(
+                f"Loading: {files_started}/{len(files)} files started, "
+                f"{total_events:,} events processed, "
+                f"{total_kept_after_baseline_cut:,} kept "
+                f"({elapsed_s:.0f} s elapsed)"
+            )
+            last_progress_at = now
+
+    df_sel = pd.concat(df_parts, ignore_index=True)
+
+    elapsed_s = time.monotonic() - started_at
+    print(
+        f"Loading complete: {len(files)}/{len(files)} files, "
+        f"{total_events:,} events in {elapsed_s:.1f} s"
+    )
+    print(f"Initial events: {total_events}")
+    print(f"After saturation cut: {total_kept_after_saturation}")
+    print(f"After baseline-pulse cut: {total_kept_after_baseline_cut}")
+
+    if keep_waveform_sample > 0 and waveform_sample_parts:
+        waveforms_sample = np.concatenate(waveform_sample_parts, axis=0)
+    else:
+        waveforms_sample = None
+
+    return time_ns_ref, df_sel, waveforms_sample
+
+def load_files_one_go(
+    files,
+    chunk_size,
+    baseline_window_ns,
+    channel,
+    *,
+    led_time_ns=None,
+    pre_led_ns=20.0,
+    post_led_ns=80.0,
+    peak_snr_threshold=5.0,
+    peak_prominence_snr=None,
+    peak_distance_samples=None,
+    peak_width_samples=None,
+):
     prerocessed_data = load_preprocessed_waveforms(
     files,
     chunk_size=chunk_size,
@@ -282,11 +453,17 @@ def load_files_one_go(files, chunk_size, baseline_window_ns, channel):
         time_ns,
         voltage_mV,
         peak_threshold_mV=None,
-        second_peak_min_height_frac=0.2,
+        peak_snr_threshold=peak_snr_threshold,
+        peak_prominence_snr=peak_prominence_snr,
+        peak_distance_samples=peak_distance_samples,
+        peak_width_samples=peak_width_samples,
         pre_peak_ns = 20,
         post_peak_ns = 80,
         pre_rise_ns = 10, 
         post_rise_ns = 80, 
+        led_time_ns=led_time_ns,
+        pre_led_ns=pre_led_ns,
+        post_led_ns=post_led_ns,
         extra=preprocessed_event_info 
     )
     cutflow = CutFlow(len(df))
@@ -300,6 +477,65 @@ def load_files_one_go(files, chunk_size, baseline_window_ns, channel):
     return time_ns, waveforms_sel, df_sel
 
 
+def load_event_waveforms(
+    events,
+    *,
+    channel="Channel 1",
+    baseline_window_ns=(0, 20),
+    time_origin="zero",
+):
+    """Load and baseline-subtract specific events listed in a feature dataframe.
+
+    ``events`` must contain ``event_file`` and ``event_segment`` columns. The
+    returned waveforms preserve the input row order.
+    """
+
+    if len(events) == 0:
+        raise ValueError("No events were requested")
+
+    required = {"event_file", "event_segment"}
+    missing = required.difference(events.columns)
+    if missing:
+        raise ValueError(f"Missing event columns: {sorted(missing)}")
+
+    event_table = events.loc[:, ["event_file", "event_segment"]].copy()
+    event_table["_request_order"] = np.arange(len(event_table))
+
+    time_ns_ref = None
+    waveform_parts = []
+    order_parts = []
+
+    for event_file, group in event_table.groupby("event_file", sort=False):
+        segments = group["event_segment"].to_numpy()
+        time_s, voltage_V, metadata = read_keysight_h5_direct(
+            event_file,
+            channel=channel,
+            segment_numbers=segments,
+        )
+        time_ns, voltage_mV, *_ = standard_units(time_s, voltage_V, metadata)
+        if time_origin == "zero":
+            time_ns = time_ns - time_ns[0]
+        elif time_origin != "original":
+            raise ValueError("time_origin must be 'original' or 'zero'")
+
+        if time_ns_ref is None:
+            time_ns_ref = time_ns
+        elif len(time_ns_ref) != len(time_ns):
+            raise ValueError(f"Number of samples changed in {event_file}")
+
+        voltage_mV, _ = baseline_subtraction(
+            time_ns_ref,
+            voltage_mV,
+            baseline_window_ns=baseline_window_ns,
+        )
+        waveform_parts.append(voltage_mV)
+        order_parts.append(group["_request_order"].to_numpy())
+
+    waveforms = np.concatenate(waveform_parts, axis=0)
+    order = np.concatenate(order_parts)
+    return time_ns_ref, waveforms[np.argsort(order)]
+
+
 
 
 
@@ -307,5 +543,7 @@ __all__ = [
     "find_pmt_files",
     "load_preprocessed_waveforms",
     "read_waveform_sample",
-    "load_files_one_go"
+    "load_files_streaming",
+    "load_files_one_go",
+    "load_event_waveforms",
 ]
