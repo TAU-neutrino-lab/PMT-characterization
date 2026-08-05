@@ -9,7 +9,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Sequence
 import gc
+import json
+import re
 import time
+import warnings
 import pandas as pd
 import numpy as np
 
@@ -23,6 +26,127 @@ from lab_tools.io import (
 
 from .preprocessing import *
 from .selection import *
+
+
+_PMT_VOLTAGE_RE = re.compile(r"(?:^|_)(?P<voltage>\d+(?:\.\d+)?)V(?:_|$)")
+
+
+def _acquisition_stem(name: str | Path) -> str:
+    """Remove only known data-artifact suffixes, preserving decimal voltages."""
+
+    filename = Path(name).name
+    for suffix in (".h5", ".npz"):
+        if filename.lower().endswith(suffix):
+            return filename[: -len(suffix)]
+    return filename
+
+
+def extract_pmt_voltage(name: str | Path) -> float:
+    """Extract the PMT bias voltage from an acquisition or artifact name."""
+
+    match = _PMT_VOLTAGE_RE.search(_acquisition_stem(name))
+    if match is None:
+        raise ValueError(f"Could not find a '<voltage>V' token in {name!s}")
+    return float(match.group("voltage"))
+
+
+def resolve_baseline_reference_path(
+    reference: str | Path | None,
+    acquisition_name: str | Path,
+) -> Path | None:
+    """Resolve a fixed or per-voltage median-baseline reference.
+
+    ``reference`` may be a single ``.npz`` file (the legacy behavior) or a
+    directory containing one artifact per voltage.  Within a directory, the
+    preferred names are ``<acquisition>.npz``, ``<PMT>_<voltage>V.npz``, and
+    ``<voltage>V.npz``.  As a fallback, exactly one artifact containing the
+    same voltage token is accepted.
+    """
+
+    if reference is None:
+        return None
+
+    reference = Path(reference)
+    if reference.is_file():
+        if reference.suffix.lower() != ".npz":
+            raise ValueError(f"Baseline reference must be an .npz file: {reference}")
+        return reference
+    if not reference.exists():
+        raise FileNotFoundError(f"Missing baseline-reference path: {reference}")
+    if not reference.is_dir():
+        raise ValueError(f"Baseline reference is not a file or directory: {reference}")
+
+    acquisition_stem = _acquisition_stem(acquisition_name)
+    voltage_match = _PMT_VOLTAGE_RE.search(acquisition_stem)
+    if voltage_match is None:
+        raise ValueError(
+            f"Cannot select a voltage-specific baseline reference for {acquisition_name!s}"
+        )
+    voltage_token = f"{voltage_match.group('voltage')}V"
+    pmt_prefix = acquisition_stem[: voltage_match.start()].rstrip("_")
+    preferred_names = [
+        f"{acquisition_stem}.npz",
+        f"{pmt_prefix}_{voltage_token}.npz" if pmt_prefix else "",
+        f"{voltage_token}.npz",
+    ]
+    for filename in preferred_names:
+        if filename and (reference / filename).is_file():
+            return reference / filename
+
+    target_voltage = float(voltage_match.group("voltage"))
+    voltage_matches = []
+    for candidate in sorted(reference.glob("*.npz")):
+        try:
+            candidate_voltage = extract_pmt_voltage(candidate)
+        except ValueError:
+            continue
+        if np.isclose(candidate_voltage, target_voltage, rtol=0.0, atol=1e-9):
+            voltage_matches.append(candidate)
+
+    if len(voltage_matches) == 1:
+        return voltage_matches[0]
+    if not voltage_matches:
+        raise FileNotFoundError(
+            f"No {voltage_token} median baseline reference found in {reference}. "
+            f"Expected a file such as {reference / f'{voltage_token}.npz'}"
+        )
+    matches = ", ".join(str(path) for path in voltage_matches)
+    raise ValueError(
+        f"Multiple {voltage_token} baseline references found in {reference}: {matches}. "
+        "Use one unambiguous preferred filename or a more specific directory."
+    )
+
+
+def load_baseline_reference(path: str | Path) -> dict:
+    """Load and validate a median-baseline ``.npz`` artifact."""
+
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as reference_data:
+        missing = {"time_ns", "baseline_template_mV"}.difference(reference_data.files)
+        if missing:
+            raise ValueError(
+                f"Baseline reference {path} is missing arrays: {sorted(missing)}"
+            )
+        time_ns = np.asarray(reference_data["time_ns"], dtype=float).copy()
+        template_mV = np.asarray(
+            reference_data["baseline_template_mV"], dtype=float
+        ).copy()
+        metadata = {}
+        if "metadata_json" in reference_data.files:
+            metadata = json.loads(str(reference_data["metadata_json"].item()))
+
+    if time_ns.ndim != 1 or template_mV.ndim != 1:
+        raise ValueError(f"Baseline reference arrays must be one-dimensional: {path}")
+    if time_ns.shape != template_mV.shape:
+        raise ValueError(f"Baseline reference time/template shapes do not match: {path}")
+    if not np.all(np.isfinite(time_ns)) or not np.all(np.isfinite(template_mV)):
+        raise ValueError(f"Baseline reference contains non-finite values: {path}")
+    return {
+        "path": path,
+        "time_ns": time_ns,
+        "baseline_template_mV": template_mV,
+        "metadata": metadata,
+    }
 
 
 def find_pmt_files(
@@ -116,6 +240,8 @@ def load_preprocessed_waveforms(
     remove_saturation=True,
     subtract_baseline=True,
     baseline_window_ns=(0.0, 20.0),
+    baseline_reference_time_ns=None,
+    baseline_reference_mV=None,
     low_limit_mV=None,
     high_limit_mV=None,
     margin_mV=0.0,
@@ -204,7 +330,13 @@ def load_preprocessed_waveforms(
         # ---------- Baseline subtraction ----------
 
         if subtract_baseline:
-            voltage_mV, baseline_event_info = ( baseline_subtraction( time_ns, voltage_mV, baseline_window_ns=baseline_window_ns ) )
+            voltage_mV, baseline_event_info = baseline_subtraction(
+                time_ns,
+                voltage_mV,
+                baseline_window_ns=baseline_window_ns,
+                baseline_reference_time_ns=baseline_reference_time_ns,
+                baseline_reference_mV=baseline_reference_mV,
+            )
         else:
             baseline_event_info = {}
 
@@ -271,12 +403,20 @@ def load_files_streaming(
     peak_prominence_snr=None,
     peak_distance_samples=None,
     peak_width_samples=None,
+    require_clean_baseline=False,
+    baseline_clean_snr=8.0,
+    baseline_reference_time_ns=None,
+    baseline_reference_mV=None,
     progress_interval_s=10.0,
+    skip_corrupt_files=True,
 ):
     """Load and reduce waveform chunks without retaining all waveforms.
 
     Progress is reported at most once per ``progress_interval_s`` seconds,
     plus one final update. Set the interval to ``None`` to disable progress.
+
+    When ``skip_corrupt_files`` is true, HDF5 read errors skip the affected
+    acquisition segment with an explicit warning while processing continues.
     """
     files = list(files)
     df_parts = []
@@ -285,13 +425,34 @@ def load_files_streaming(
 
     total_events = 0
     total_kept_after_saturation = 0
+    total_kept_after_raw_baseline_check = 0
     total_kept_after_baseline_cut = 0
     started_at = time.monotonic()
     last_progress_at = started_at
     current_file = None
     files_started = 0
+    skipped_files = []
 
-    for chunk in iter_keysight_chunks(files, channel=channel, chunk_size=chunk_size):
+    def iter_readable_chunks():
+        # Iterate one file at a time so an HDF5 failure does not terminate the
+        # generator before the remaining acquisition segments are attempted.
+        for file in files:
+            try:
+                yield from iter_keysight_chunks(
+                    [file], channel=channel, chunk_size=chunk_size
+                )
+            except (OSError, RuntimeError) as exc:
+                if not skip_corrupt_files:
+                    raise
+                skipped_files.append(str(file))
+                warnings.warn(
+                    f"Skipping unreadable HDF5 segment {file}: "
+                    f"{type(exc).__name__}: {exc}",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+
+    for chunk in iter_readable_chunks():
         chunk_file = str(chunk["filename"])
         if chunk_file != current_file:
             current_file = chunk_file
@@ -327,15 +488,40 @@ def load_files_streaming(
         segment_numbers = np.asarray(chunk["segment_numbers"])[keep_mask]
         event_files_chunk = np.array([chunk["filename"]] * n_events_chunk)[keep_mask]
 
-        # 2. Baseline subtraction
+        # 2. Reject raw baseline windows containing a pulse-like excursion. This
+        # must happen before subtraction so the pulse cannot bias its own noise
+        # threshold. It is especially important for asynchronous dark counts.
+        if require_clean_baseline:
+            baseline_keep_mask, raw_baseline_info = baseline_cleanliness_mask(
+                time_ns_ref,
+                voltage_mV,
+                baseline_window_ns=baseline_window_ns,
+                excursion_snr=baseline_clean_snr,
+                polarity="negative",
+            )
+            voltage_mV = voltage_mV[baseline_keep_mask]
+            segment_numbers = segment_numbers[baseline_keep_mask]
+            event_files_chunk = event_files_chunk[baseline_keep_mask]
+            raw_baseline_info = {
+                key: np.asarray(values)[baseline_keep_mask]
+                for key, values in raw_baseline_info.items()
+            }
+        else:
+            raw_baseline_info = {}
+        total_kept_after_raw_baseline_check += len(voltage_mV)
+
+        # 3. Baseline subtraction
         voltage_mV, baseline_event_info = baseline_subtraction(
             time_ns_ref,
             voltage_mV,
             baseline_window_ns=baseline_window_ns,
+            baseline_reference_time_ns=baseline_reference_time_ns,
+            baseline_reference_mV=baseline_reference_mV,
         )
 
-        # 3. Build features only for this chunk
+        # 4. Build features only for this chunk
         extra = {
+            **raw_baseline_info,
             **baseline_event_info,
             "event_file": event_files_chunk,
             "event_segment": segment_numbers,
@@ -359,7 +545,7 @@ def load_files_streaming(
             extra=extra,
         )
 
-        # 4. Apply baseline-pulse rejection on this chunk
+        # 5. Apply the existing post-subtraction baseline-pulse safeguard.
         mask = reject_baseline_pulses(
             df_chunk,
             baseline_window_ns,
@@ -377,7 +563,7 @@ def load_files_streaming(
             if remaining > 0:
                 waveform_sample_parts.append(voltage_mV[mask.values][:remaining].copy())
 
-        # 5. Explicitly release chunk arrays
+        # 6. Explicitly release chunk arrays
         del voltage_mV, df_chunk, df_chunk_sel
         gc.collect()
 
@@ -395,15 +581,33 @@ def load_files_streaming(
             )
             last_progress_at = now
 
+    if not df_parts:
+        skipped_note = (
+            f"; skipped {len(skipped_files)} unreadable file(s)"
+            if skipped_files
+            else ""
+        )
+        raise ValueError(f"No waveforms were loaded{skipped_note}")
+
     df_sel = pd.concat(df_parts, ignore_index=True)
 
     elapsed_s = time.monotonic() - started_at
     print(
-        f"Loading complete: {len(files)}/{len(files)} files, "
+        f"Loading complete: {len(files) - len(skipped_files)}/{len(files)} files, "
         f"{total_events:,} events in {elapsed_s:.1f} s"
     )
+    if skipped_files:
+        print(f"Skipped unreadable files: {len(skipped_files)}")
+        for skipped_file in skipped_files:
+            print(f"  - {skipped_file}")
     print(f"Initial events: {total_events}")
     print(f"After saturation cut: {total_kept_after_saturation}")
+    if require_clean_baseline:
+        print(
+            f"After raw baseline-cleanliness cut "
+            f"(< {baseline_clean_snr:g} robust RMS): "
+            f"{total_kept_after_raw_baseline_check}"
+        )
     print(f"After baseline-pulse cut: {total_kept_after_baseline_cut}")
 
     if keep_waveform_sample > 0 and waveform_sample_parts:
@@ -426,6 +630,8 @@ def load_files_one_go(
     peak_prominence_snr=None,
     peak_distance_samples=None,
     peak_width_samples=None,
+    baseline_reference_time_ns=None,
+    baseline_reference_mV=None,
 ):
     prerocessed_data = load_preprocessed_waveforms(
     files,
@@ -439,6 +645,8 @@ def load_files_one_go(
     max_saturated_samples=0,
     channel=channel,
     time_origin='zero',
+    baseline_reference_time_ns=baseline_reference_time_ns,
+    baseline_reference_mV=baseline_reference_mV,
     )
     time_ns = prerocessed_data["time_ns"]
     voltage_mV = prerocessed_data["voltage_mV"]
@@ -482,6 +690,8 @@ def load_event_waveforms(
     *,
     channel="Channel 1",
     baseline_window_ns=(0, 20),
+    baseline_reference_time_ns=None,
+    baseline_reference_mV=None,
     time_origin="zero",
 ):
     """Load and baseline-subtract specific events listed in a feature dataframe.
@@ -527,6 +737,8 @@ def load_event_waveforms(
             time_ns_ref,
             voltage_mV,
             baseline_window_ns=baseline_window_ns,
+            baseline_reference_time_ns=baseline_reference_time_ns,
+            baseline_reference_mV=baseline_reference_mV,
         )
         waveform_parts.append(voltage_mV)
         order_parts.append(group["_request_order"].to_numpy())
@@ -540,9 +752,12 @@ def load_event_waveforms(
 
 
 __all__ = [
+    "extract_pmt_voltage",
     "find_pmt_files",
+    "load_baseline_reference",
     "load_preprocessed_waveforms",
     "read_waveform_sample",
+    "resolve_baseline_reference_path",
     "load_files_streaming",
     "load_files_one_go",
     "load_event_waveforms",

@@ -79,8 +79,70 @@ def remove_saturated_waveforms( voltage_mV, metadata, low_limit_mV=None, high_li
 # Baseline 
 # ----------------------------------------------------------------
 
-def baseline_subtraction(time_ns, voltage_mV, baseline_window_ns=None):
-    """baseline is the mean wavefrom in baseline_window_ns."""
+def baseline_cleanliness_mask(
+    time_ns,
+    voltage_mV,
+    baseline_window_ns=(0.0, 20.0),
+    excursion_snr=8.0,
+    polarity="negative",
+):
+    """Return a mask selecting raw waveforms with a pulse-free baseline window.
+
+    Median and MAD estimates are deliberately computed before baseline
+    subtraction, so a pulse in the window cannot inflate the mean/RMS used to
+    detect itself.
+    """
+    time_ns = np.asarray(time_ns)
+    voltage_mV = np.asarray(voltage_mV)
+    window = (time_ns >= baseline_window_ns[0]) & (time_ns <= baseline_window_ns[1])
+    if not np.any(window):
+        raise ValueError(f"Baseline window {baseline_window_ns} contains no samples")
+
+    region = voltage_mV[:, window]
+    center = np.median(region, axis=1)
+    mad = np.median(np.abs(region - center[:, None]), axis=1)
+    robust_rms = 1.4826 * mad
+    fallback_rms = np.std(region, axis=1)
+    robust_rms = np.where(robust_rms > 0, robust_rms, fallback_rms)
+
+    if polarity == "negative":
+        excursion = center - np.min(region, axis=1)
+    elif polarity == "positive":
+        excursion = np.max(region, axis=1) - center
+    else:
+        raise ValueError("polarity must be 'negative' or 'positive'")
+
+    excursion_snr_values = np.divide(
+        excursion,
+        robust_rms,
+        out=np.full(excursion.shape, np.inf),
+        where=robust_rms > 0,
+    )
+    clean = excursion_snr_values < float(excursion_snr)
+    info = {
+        "baseline_window_is_clean": clean,
+        "baseline_robust_rms_mV": robust_rms,
+        "baseline_max_excursion_mV": excursion,
+        "baseline_max_excursion_snr": excursion_snr_values,
+    }
+    return clean, info
+
+
+def baseline_subtraction(
+    time_ns,
+    voltage_mV,
+    baseline_window_ns=None,
+    baseline_reference_time_ns=None,
+    baseline_reference_mV=None,
+):
+    """Subtract a baseline template and the remaining per-event DC offset.
+
+    Without a reference, this retains the historical behavior of subtracting
+    each waveform's mean in ``baseline_window_ns``.  When a reference is
+    supplied, its pointwise waveform is subtracted first, followed by the mean
+    residual in the baseline window.  The latter protects charge integrals
+    against run-to-run DC drift relative to the saved reference acquisition.
+    """
 
     if baseline_window_ns is None:
         baseline_window_ns = (0.0, 20.0)
@@ -89,6 +151,23 @@ def baseline_subtraction(time_ns, voltage_mV, baseline_window_ns=None):
     if not np.any(mask):
         raise ValueError(f"Baseline window {baseline_window_ns} contains no samples")
     
+    use_reference = baseline_reference_mV is not None
+    if use_reference != (baseline_reference_time_ns is not None):
+        raise ValueError(
+            "baseline_reference_time_ns and baseline_reference_mV must be supplied together"
+        )
+    if use_reference:
+        reference_time_ns = np.asarray(baseline_reference_time_ns, dtype=float)
+        reference_mV = np.asarray(baseline_reference_mV, dtype=float)
+        if reference_time_ns.shape != np.asarray(time_ns).shape:
+            raise ValueError("Baseline-reference time axis has the wrong shape")
+        if reference_mV.shape != np.asarray(time_ns).shape:
+            raise ValueError("Baseline-reference waveform has the wrong shape")
+        if not np.allclose(reference_time_ns, time_ns, rtol=1e-7, atol=1e-9):
+            raise ValueError("Baseline-reference time axis does not match the acquisition")
+    else:
+        reference_mV = np.zeros_like(time_ns, dtype=float)
+
     #--- statistics
     baseline_region = voltage_mV[:, mask]
     # Mean baseline
@@ -106,13 +185,18 @@ def baseline_subtraction(time_ns, voltage_mV, baseline_window_ns=None):
         numer = np.sum( (x - xmean)[None, :] * (baseline_region - ymean[:, None]),  axis=1 )
         baseline_slope_mV_per_ns = numer / denom
 
-    # Baseline subtraction
-    voltage_bs_mV = ( voltage_mV - baseline_mean_mV[:, None])
+    # Subtract coherent reference structure, then remove the remaining scalar
+    # offset for each event. With a zero reference this is the legacy mean-only
+    # subtraction exactly.
+    reference_subtracted_mV = voltage_mV - reference_mV[None, :]
+    residual_baseline_mean_mV = np.mean(reference_subtracted_mV[:, mask], axis=1)
+    voltage_bs_mV = reference_subtracted_mV - residual_baseline_mean_mV[:, None]
 
     event_info = {
         "baseline_mean_mV": baseline_mean_mV,
         "baseline_rms_mV": baseline_rms_mV,
-        "baseline_slope_mV_per_ns": baseline_slope_mV_per_ns
+        "baseline_slope_mV_per_ns": baseline_slope_mV_per_ns,
+        "baseline_reference_residual_mean_mV": residual_baseline_mean_mV,
     }
 
     return voltage_bs_mV, event_info
@@ -359,7 +443,7 @@ def _extract_waveform_features_slow(
     post_rise_ns = 80, 
 ):
 
-    n_events = len(waveforms_mV)
+    n_events = len(pulse_positive_mV)
     results = {
         "peak_width_ns": np.full(n_events, np.nan),
         "rise_time_10_90_ns": np.full(n_events, np.nan),
@@ -559,6 +643,7 @@ def apply_cut_v(df, waveforms, variable, range=(0, 11)):
 
 
 __all__ = ["baseline_subtraction",
+           "baseline_cleanliness_mask",
            "remove_saturated_waveforms", 
            "build_waveform_feature_dataframe",
            "integrate_led_window_charge",
