@@ -88,7 +88,7 @@ def plot_parameter( df, parameter, ax=None, x="HV", xlabel=None, ylabel=None, ti
         if lower is not None and upper is not None:
             # Same color as the plotted line
             color = ax.lines[-1].get_color()
-            ax.fill_between( df[x], lower, upper, color=color, alpha=bound_alpha, linewidth=0, zorder=0 )
+            ax.fill_between( df[x], lower, upper, color=color, alpha=bound_alpha, linewidth=3, linestyle='--', zorder=0 )
 
     if title is not None:
         ax.set_title(title)

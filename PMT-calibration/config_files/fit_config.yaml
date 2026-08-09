@@ -1,4 +1,27 @@
 
+#------------------------------------
+#           WA0089 525MHz
+#------------------------------------
+
+WA0089_525MHz_led100_defaults:
+  poisson:
+    initPars:
+      q0_mV_ns:     [ 0.3, -5.0,    5.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  10.0, False]
+      q1_mV_ns:     [29.0,  5.0,  200.0, False]
+      sigma1_mV_ns: [12.0,  1.0,   80.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+    initPars:
+      q0_mV_ns:     [ -1.3, -5.0,    5.0,  False]
+      sigma0_mV_ns: [  2.6,  1e-4,  10.0,  False]
+      q1_mV_ns:     [29.0,  5.0,  200.0,  False]
+      sigma1_mV_ns: [12.0,  1.0,   80.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0,  False]
+      w:            [0.5,    0.,     1.0, False]
+      alpha:        [0.3,   0.,     10.0, False]
+
+
 WA0089_750V_525MHz_led100:
   poisson:
     initPars:
@@ -197,3 +220,97 @@ WA0089_1000V_525MHz_led100:
       mu_pe:        [0.06, 0.001, 5.0,  False]
       w:            [0.2, 0., 1.,       False]
       alpha:        [0.3, 0., 10.,      False]
+
+#------------------------------------
+#           WA0089 20MHz
+#------------------------------------
+
+WA0089_20MHz_led100_defaults:
+  poisson:
+    initPars:
+      q0_mV_ns:     [ 0.3, -5.0,    5.0, False]
+      sigma0_mV_ns: [ 3.9,  1e-4,  10.0, False]
+      q1_mV_ns:     [29.0,  5.0,  200.0, False]
+      sigma1_mV_ns: [12.0,  1.0,   80.0, False]
+      mu_pe:        [ 0.06, 0.001,  5.0, False]
+  bellamy:
+    initPars:
+      q0_mV_ns:     [ -1.3, -5.0,    5.0,  False]
+      sigma0_mV_ns: [  2.6,  1e-4,  10.0,  False]
+      q1_mV_ns:     [29.0,  5.0,  200.0,  False]
+      sigma1_mV_ns: [12.0,  1.0,   80.0,  False]
+      mu_pe:        [ 0.06, 0.001,  5.0,  False]
+      w:            [0.5,    0.,     1.0, False]
+      alpha:        [0.3,   0.,     10.0, False]
+
+
+
+WA0089_750V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+
+WA0089_775V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+
+WA0089_800V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+
+WA0089_825V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+
+WA0089_850V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+
+WA0089_875V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+      q1_mV_ns:     [70.0,  5.0,  200.0,  False]
+
+WA0089_900V_20MHz_led100:
+  bellamy:
+    initPars:
+      w:            [1.0,    0.,     1.0, True]
+      q1_mV_ns:     [70.0,  5.0,  200.0,  False]
+
+WA0089_925V_20MHz_led100:
+  bellamy:
+    initPars:
+      q1_mV_ns:     [100.0,  5.0,  200.0,  False]
+      w:            [0.5,    0.,     1.0, False]
+      alpha:        [0.09,   0.,     10.0, False]
+
+WA0089_950V_20MHz_led100:
+  bellamy:
+    initPars:
+      q1_mV_ns:     [110.0,  5.0,  200.0,  False]
+      w:            [0.5,    0.,     1.0, False]
+      alpha:        [0.09,   0.,     10.0, False]
+
+WA0089_975V_20MHz_led100:
+  fit_range: [-50, 450]
+  bellamy:
+    initPars:
+      q1_mV_ns:     [150.0,  5.0,  200.0,  False]
+      w:            [0.01,    0.,     1.0, False]
+      alpha:        [0.1,   0.,     10.0, False]
+
+WA0089_1000V_20MHz_led100:
+  fit_range: [-60, 500]
+  bellamy:
+    initPars:
+      q1_mV_ns:     [180.0,  5.0,  200.0,  False]
+      w:            [0.01,    0.,     1.0, False]
+      alpha:        [0.1,   0.,     10.0, False]
+
+
+

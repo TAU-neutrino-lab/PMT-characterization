@@ -162,11 +162,6 @@ def load_preprocessed_waveforms(
 
         elif len(time_ns_original) != len(chunk["time_ns"]):
             raise ValueError( f"Number of samples changed in {chunk['filename']}")
-        # elif not np.allclose(chunk["time_ns"], time_ns_original): # checks whether two arrays are element-wise approximately equal within a given mathematical tolerance
-        #     print(chunk["time_ns"])
-        #     print()
-        #     print(time_ns_original)
-        #     raise ValueError( f"Time axis changed in {chunk['filename']}")
 
         voltage_mV = chunk["voltage_mV"]
         n_events_chunk = len(voltage_mV)
@@ -256,41 +251,35 @@ def load_preprocessed_waveforms(
 
 
 def load_files_one_go(files, chunk_size, baseline_window_ns, channel):
-    prerocessed_data = load_preprocessed_waveforms(
-    files,
-    chunk_size=chunk_size,
-    remove_saturation=True,
-    subtract_baseline=True,
-    baseline_window_ns=baseline_window_ns,
-    low_limit_mV=None, 
-    high_limit_mV=None, 
-    margin_mV=0.0,
-    max_saturated_samples=0,
-    channel=channel,
-    time_origin='zero',
-    )
+    prerocessed_data = load_preprocessed_waveforms( files, chunk_size=chunk_size,
+                                                    remove_saturation=True,
+                                                    subtract_baseline=True,
+                                                    baseline_window_ns=baseline_window_ns,
+                                                    low_limit_mV=None, 
+                                                    high_limit_mV=None, 
+                                                    margin_mV=0.0,
+                                                    max_saturated_samples=0,
+                                                    channel=channel,
+                                                    time_origin='zero',
+                                                )
     time_ns = prerocessed_data["time_ns"]
     voltage_mV = prerocessed_data["voltage_mV"]
+    print(f'remove saturation: {prerocessed_data["saturation_summary"]["efficiency"]*100:.2f} %')
 
     preprocessed_event_info = {k: v for k, v in prerocessed_data['event_info'].items() if k not in ['is_saturated', 'n_saturated_samples']}
-    preprocessed_event_info.update({ 
-        'event_file': prerocessed_data['event_file'],
-        'event_segment': prerocessed_data['event_segment']
-    })
+    preprocessed_event_info.update({ 'event_file': prerocessed_data['event_file'], 
+                                     'event_segment': prerocessed_data['event_segment'] })
 
-    df = build_waveform_feature_dataframe(
-        time_ns,
-        voltage_mV,
-        peak_threshold_mV=None,
-        second_peak_min_height_frac=0.2,
-        pre_peak_ns = 20,
-        post_peak_ns = 80,
-        pre_rise_ns = 10, 
-        post_rise_ns = 80, 
-        extra=preprocessed_event_info 
-    )
+    df = build_waveform_feature_dataframe( time_ns, voltage_mV,
+                                            peak_threshold_mV=None,
+                                            second_peak_min_height_frac=0.2,
+                                            pre_peak_ns = 20,
+                                            post_peak_ns = 80,
+                                            pre_rise_ns = 10, 
+                                            post_rise_ns = 80, 
+                                            extra=preprocessed_event_info 
+                                          )
     cutflow = CutFlow(len(df))
-
     cutflow.apply( "peaks in the baseline", reject_baseline_pulses( df, baseline_window_ns, min_peak_height_mV=0.5 ) )
     cutflow.print()
 

@@ -7,6 +7,8 @@ from scipy.optimize import curve_fit
 import yaml
 
 
+
+
 @dataclass(frozen=True)
 class FitModel:
     """
@@ -320,6 +322,12 @@ def fit_result_table(fit, as_dataframe=True):
     if as_dataframe:
         return pd.DataFrame(rows)
     return rows
+
+def get_initPars(cfg, file_key, fit_model, default_key):
+    default = cfg[default_key][fit_model]["initPars"]
+    user = ( cfg.get(file_key, {}).get(fit_model, {}).get("initPars", {}) )
+    ## if there is a parameter in user with the same key as in default, default value is overwritten
+    return {**default, **user}
 
 # -------------------------------------
 #             Display
@@ -646,3 +654,5 @@ def save_fit_results(fit_res, output_path):
     results = to_python(results)
     with open(output_path, "w") as f:
         yaml.safe_dump(results, f, sort_keys=False)
+
+
