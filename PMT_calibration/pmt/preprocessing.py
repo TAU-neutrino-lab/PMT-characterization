@@ -314,22 +314,30 @@ def _fractional_crossing_time(t, v, fraction, rising=True, peak_idx=None):
     if rising:
         region_t = t[:peak_idx + 1]
         region_v = v[:peak_idx + 1]
-
-        idx = np.where(region_v >= threshold)[0]
-
+        # Use the last upward crossing before the peak. Searching for the first
+        # sample above a low CFD threshold can lock onto an unrelated baseline
+        # fluctuation long before the actual pulse.
+        crossings = np.where(
+            (region_v[:-1] < threshold) & (region_v[1:] >= threshold)
+        )[0]
+        if len(crossings):
+            i = int(crossings[-1] + 1)
+        elif region_v[0] >= threshold:
+            return float(region_t[0])
+        else:
+            return np.nan
     else:
         region_t = t[peak_idx:]
         region_v = v[peak_idx:]
-
-        idx = np.where(region_v <= threshold)[0]
-
-    if len(idx) == 0:
-        return np.nan
-
-    i = idx[0]
-
-    if i == 0:
-        return region_t[0]
+        crossings = np.where(
+            (region_v[:-1] > threshold) & (region_v[1:] <= threshold)
+        )[0]
+        if len(crossings):
+            i = int(crossings[0] + 1)
+        elif region_v[0] <= threshold:
+            return float(region_t[0])
+        else:
+            return np.nan
 
     t1 = region_t[i - 1]
     t2 = region_t[i]
@@ -341,6 +349,139 @@ def _fractional_crossing_time(t, v, fraction, rising=True, peak_idx=None):
         return t1
 
     return t1 + ( (threshold - y1) * (t2 - t1) / (y2 - y1) )
+
+
+def learn_fixed_pulse_charge_window(
+    df,
+    *,
+    reference_snr=15.0,
+    width_quantile=0.95,
+    min_reference_pulses=100,
+    generic_shape_ranges=None,
+    max_additional_peak_fraction=0.75,
+):
+    """Learn one fixed integration window from clean single-pulse events.
+
+    The window width is the requested quantile of each reference pulse's
+    CFD-10 falling-minus-rising duration. Its center is the median CFD-10
+    midpoint. The learned bounds are trigger-relative and can therefore be
+    applied unchanged to pulse and pedestal events.
+    """
+
+    required_columns = {
+        "snr",
+        "n_peaks",
+        "n_signal_like_peaks",
+        "largest_additional_signal_like_peak_fraction",
+        "cfd10_rise_ns",
+        "cfd10_fall_ns",
+    }
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        raise ValueError(
+            "Fixed pulse-window learning requires missing dataframe columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    reference_snr = float(reference_snr)
+    width_quantile = float(width_quantile)
+    min_reference_pulses = int(min_reference_pulses)
+    if not np.isfinite(reference_snr):
+        raise ValueError("reference_snr must be finite")
+    if not 0.0 < width_quantile <= 1.0:
+        raise ValueError("width_quantile must be in (0, 1]")
+    if min_reference_pulses < 1:
+        raise ValueError("min_reference_pulses must be at least 1")
+    max_additional_peak_fraction = float(max_additional_peak_fraction)
+    if not 0.0 <= max_additional_peak_fraction <= 1.0:
+        raise ValueError("max_additional_peak_fraction must be between 0 and 1")
+
+    if generic_shape_ranges is None:
+        generic_shape_ranges = {}
+    else:
+        generic_shape_ranges = dict(generic_shape_ranges)
+    supported_shape_columns = {
+        "peak_width_ns", "rise_time_10_90_ns", "fall_time_90_10_ns"
+    }
+    unknown_shape_columns = set(generic_shape_ranges).difference(
+        supported_shape_columns
+    )
+    if unknown_shape_columns:
+        raise ValueError(
+            "generic_shape_ranges contains unsupported columns: "
+            f"{sorted(unknown_shape_columns)}"
+        )
+    generic_shape_mask = np.ones(len(df), dtype=bool)
+    for column, bounds in generic_shape_ranges.items():
+        if column not in df.columns:
+            raise ValueError(
+                f"Fixed pulse-window learning requires missing dataframe column: {column}"
+            )
+        if len(bounds) != 2:
+            raise ValueError(f"Generic bounds for {column} must have two values")
+        low, high = map(float, bounds)
+        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
+            raise ValueError(
+                f"Generic bounds for {column} must be finite with low < high"
+            )
+        generic_shape_ranges[column] = (low, high)
+        generic_shape_mask &= df[column].between(low, high).fillna(False).to_numpy()
+
+    rise_ns = df["cfd10_rise_ns"].to_numpy(dtype=float)
+    fall_ns = df["cfd10_fall_ns"].to_numpy(dtype=float)
+    durations_ns = fall_ns - rise_ns
+    has_dominant_peak = (
+        df["n_signal_like_peaks"].eq(1)
+        | (
+            df["n_signal_like_peaks"].gt(1)
+            & df["largest_additional_signal_like_peak_fraction"].le(
+                max_additional_peak_fraction
+            ).fillna(False)
+        )
+    ).to_numpy()
+    reference_mask = (
+        df["snr"].ge(reference_snr).fillna(False).to_numpy()
+        & df["n_peaks"].eq(1).to_numpy()
+        & has_dominant_peak
+        & generic_shape_mask
+        & np.isfinite(rise_ns)
+        & np.isfinite(fall_ns)
+        & (durations_ns > 0.0)
+    )
+    reference_count = int(np.sum(reference_mask))
+    if reference_count < min_reference_pulses:
+        raise ValueError(
+            "Cannot learn the fixed pulse charge window: found "
+            f"{reference_count} valid dominant single pulses at "
+            f"SNR >= {reference_snr:g}, "
+            f"but at least {min_reference_pulses} are required."
+        )
+
+    reference_durations_ns = durations_ns[reference_mask]
+    reference_midpoints_ns = 0.5 * (
+        rise_ns[reference_mask] + fall_ns[reference_mask]
+    )
+    width_ns = float(np.quantile(reference_durations_ns, width_quantile))
+    center_ns = float(np.median(reference_midpoints_ns))
+    start_ns = center_ns - 0.5 * width_ns
+    stop_ns = center_ns + 0.5 * width_ns
+    contained = (
+        (rise_ns[reference_mask] >= start_ns)
+        & (fall_ns[reference_mask] <= stop_ns)
+    )
+
+    return {
+        "reference_snr": reference_snr,
+        "width_quantile": width_quantile,
+        "min_reference_pulses": min_reference_pulses,
+        "reference_pulses": reference_count,
+        "generic_shape_ranges": generic_shape_ranges,
+        "max_additional_peak_fraction": max_additional_peak_fraction,
+        "center_ns": center_ns,
+        "width_ns": width_ns,
+        "window_ns": (start_ns, stop_ns),
+        "reference_containment_fraction": float(np.mean(contained)),
+    }
 
 # ----------------------------------------------------------------
 # Waveform analysis 
@@ -383,6 +524,68 @@ def _find_waveform_peaks(
         peaks_by_event.append(peaks)
         properties_by_event.append(properties)
     return pulse_positive_mV, peaks_by_event, properties_by_event
+
+
+def _summarize_signal_like_peaks(
+    pulse_positive_mV,
+    baseline_rms_mV,
+    primary_peak_idx,
+    *,
+    peak_snr_threshold=5.0,
+    peak_threshold_mV=None,
+    peak_prominence_snr=None,
+    peak_distance_samples=None,
+):
+    """Summarize height/prominence-qualified candidates before width cuts."""
+    counts = np.zeros(len(pulse_positive_mV), dtype=int)
+    largest_additional_amplitude = np.full(len(pulse_positive_mV), np.nan)
+    largest_additional_idx = np.full(len(pulse_positive_mV), -1, dtype=int)
+    largest_additional_fraction = np.zeros(len(pulse_positive_mV), dtype=float)
+    for index, (waveform, baseline_rms) in enumerate(
+        zip(pulse_positive_mV, np.asarray(baseline_rms_mV, dtype=float))
+    ):
+        minimum_height = 0.0 if peak_threshold_mV is None else float(peak_threshold_mV)
+        if peak_snr_threshold is not None:
+            minimum_height = max(
+                minimum_height, float(peak_snr_threshold) * baseline_rms
+            )
+        prominence = (
+            None if peak_prominence_snr is None
+            else float(peak_prominence_snr) * baseline_rms
+        )
+        peaks, _ = find_peaks(
+            waveform,
+            height=minimum_height,
+            prominence=prominence,
+            distance=peak_distance_samples,
+        )
+        counts[index] = len(peaks)
+        primary = int(primary_peak_idx[index])
+        if primary < 0 or not len(peaks):
+            largest_additional_fraction[index] = np.nan
+            continue
+        additional = peaks[peaks != primary]
+        if not len(additional):
+            continue
+        additional_idx = int(additional[np.argmax(waveform[additional])])
+        additional_amplitude = float(waveform[additional_idx])
+        primary_amplitude = float(waveform[primary])
+        largest_additional_idx[index] = additional_idx
+        largest_additional_amplitude[index] = additional_amplitude
+        largest_additional_fraction[index] = (
+            additional_amplitude / primary_amplitude
+            if primary_amplitude > 0.0 else np.inf
+        )
+    return {
+        "n_signal_like_peaks": counts,
+        "largest_additional_signal_like_peak_idx": largest_additional_idx,
+        "largest_additional_signal_like_peak_amplitude_mV": (
+            largest_additional_amplitude
+        ),
+        "largest_additional_signal_like_peak_fraction": (
+            largest_additional_fraction
+        ),
+    }
 
 
 def _extract_waveform_features_fast(
@@ -568,6 +771,15 @@ def build_waveform_feature_dataframe(
         pre_peak_ns, post_peak_ns,
     )
     peak_idx=fast["peak_idx"]
+    signal_like_peak_summary = _summarize_signal_like_peaks(
+        pulse_positive_mV,
+        extra["baseline_rms_mV"],
+        peak_idx,
+        peak_snr_threshold=peak_snr_threshold,
+        peak_threshold_mV=peak_threshold_mV,
+        peak_prominence_snr=peak_prominence_snr,
+        peak_distance_samples=peak_distance_samples,
+    )
     slow = _extract_waveform_features_slow(
         time_ns=time_ns,
         pulse_positive_mV=pulse_positive_mV,
@@ -581,6 +793,20 @@ def build_waveform_feature_dataframe(
     features = {}
     features.update(fast)
     features.update(slow)
+    features.update(signal_like_peak_summary)
+    signal_like_peak_counts = signal_like_peak_summary["n_signal_like_peaks"]
+    additional_idx = signal_like_peak_summary[
+        "largest_additional_signal_like_peak_idx"
+    ]
+    additional_time_ns = np.full(len(additional_idx), np.nan)
+    has_additional = additional_idx >= 0
+    additional_time_ns[has_additional] = np.asarray(time_ns)[
+        additional_idx[has_additional]
+    ]
+    features["largest_additional_signal_like_peak_time_ns"] = additional_time_ns
+    features["signal_like_bad_shape"] = (
+        (signal_like_peak_counts > 0) & (slow["n_peaks"] == 0)
+    )
     max_excursion_idx = np.argmax(pulse_positive_mV, axis=1)
     features["max_excursion_time_ns"] = np.asarray(time_ns)[max_excursion_idx]
     features["max_excursion_amplitude_mV"] = pulse_positive_mV[
@@ -647,6 +873,7 @@ __all__ = ["baseline_subtraction",
            "remove_saturated_waveforms", 
            "build_waveform_feature_dataframe",
            "integrate_led_window_charge",
+           "learn_fixed_pulse_charge_window",
            "apply_cut_v",
 
            "_fractional_crossing_time"
